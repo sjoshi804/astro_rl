@@ -312,25 +312,28 @@ class ExecutionInstance:
         cleaned_lines = []
         
         for line in lines:
-            line = line.strip()
+            # Only strip trailing whitespace, preserve leading indentation
+            line_stripped = line.rstrip()
+            line_content = line.strip()  # For content checking only
             
             # Skip empty lines at the beginning, but keep them in the middle/end for structure
-            if not line and not cleaned_lines:
+            if not line_content and not cleaned_lines:
                 continue
                 
             # Skip lines that look like markdown or explanatory text
-            if self._is_explanatory_line(line):
+            if self._is_explanatory_line(line_content):
                 continue
                 
             # Skip lines with common artifacts
-            if any(artifact in line.lower() for artifact in [
+            if any(artifact in line_content.lower() for artifact in [
                 'this code snippet', 'the code above', 'step 1:', 'step 2:',
                 'created question:', 'created answer:', '### ', '# step',
                 'execution ✓:', 'indentationerror:', 'syntaxerror:'
             ]):
                 continue
             
-            cleaned_lines.append(line)
+            # Use the line with preserved indentation
+            cleaned_lines.append(line_stripped)
         
         return '\n'.join(cleaned_lines).strip()
     
@@ -515,12 +518,17 @@ class ExecutionInstance:
         # Add a unique marker to identify end of output
         marker = f"EXEC_END_{uuid.uuid4().hex[:8]}"
         
-        # Clean and dedent the code to avoid indentation issues
+        # Clean the code to remove artifacts
         cleaned_code = self._clean_code_for_execution(code)
         
-        # Instead of wrapping in try-except (which causes indentation issues),
-        # send the code directly and handle errors separately
-        full_code = f"{cleaned_code}\nprint('{marker}')\n"
+        # For multi-line blocks, use exec() to ensure proper execution
+        if self._is_multiline_block(cleaned_code):
+            # Escape the code string and use exec() to handle complex blocks
+            escaped_code = cleaned_code.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+            full_code = f'exec("""{cleaned_code}""")\nprint("{marker}")\n'
+        else:
+            # Single line or simple statements can be sent directly
+            full_code = f"{cleaned_code}\nprint('{marker}')\n"
         
         # Send code to process
         self.process.stdin.write(full_code.encode())
@@ -557,20 +565,44 @@ class ExecutionInstance:
         
         return result
     
+    def _is_multiline_block(self, code: str) -> bool:
+        """Check if code contains multi-line blocks that need special handling"""
+        lines = code.split('\n')
+        
+        # Check for any line that ends with : (indicates a block)
+        has_block_structure = False
+        has_indented_content = False
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            # Check for statements that create blocks
+            if stripped.endswith(':'):
+                # Common block-creating statements
+                block_keywords = [
+                    'try:', 'except', 'finally:', 'if', 'elif', 'else:',
+                    'for', 'while', 'with', 'def', 'class', 'async def'
+                ]
+                if any(stripped.startswith(keyword) for keyword in block_keywords):
+                    has_block_structure = True
+                # Also check for generic case where line ends with : and next line is indented
+                elif i + 1 < len(lines) and lines[i + 1].startswith('    '):
+                    has_block_structure = True
+            
+            # Check if we have indented content (indicating block structure)
+            if line.startswith('    ') and stripped:
+                has_indented_content = True
+        
+        return has_block_structure or has_indented_content
+    
     def _indent_code(self, code: str) -> str:
         """Indent code for wrapping in try-except block"""
         return '\n'.join(f"    {line}" for line in code.splitlines())
     
     def _clean_code_for_execution(self, code: str) -> str:
         """Clean and prepare code for execution in interactive shell"""
-        import textwrap
-        
-        # Remove any existing indentation to avoid conflicts
-        # This handles code that was already indented
-        cleaned_code = textwrap.dedent(code)
-        
         # Split into lines and filter out problematic lines
-        lines = cleaned_code.split('\n')
+        lines = code.split('\n')
         clean_lines = []
         
         for line in lines:
@@ -593,7 +625,7 @@ class ExecutionInstance:
             # Keep the line
             clean_lines.append(line)
         
-        # Rejoin and ensure it ends with a newline
+        # Rejoin the lines
         result = '\n'.join(clean_lines).strip()
         
         # If code is empty after cleaning, return empty string

@@ -45,10 +45,10 @@ export CODE_EXEC_SERVICE_PORT="8002"
 
 # Service Configuration
 export TENSOR_PARALLEL_SIZE="1"
-export MAX_TURNS="8"
-export TIMEOUT_SECONDS="60"
-export TIMEOUT_PER_STEP="15"
-export MAX_STEPS="20"
+export MAX_TURNS="10"
+export TIMEOUT_SECONDS="120"
+export TIMEOUT_PER_STEP="120"
+export MAX_STEPS="10"
 export PROB_COMPLETION="0.1"
 export CONDA_ENV="astro_rl"
 
