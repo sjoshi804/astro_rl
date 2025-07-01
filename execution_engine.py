@@ -62,22 +62,61 @@ class ExecutionInstance:
         self.temp_dir = tempfile.mkdtemp(prefix=f"exec_{instance_id}_")
         logger.info(f"Created execution instance {instance_id} with temp dir {self.temp_dir}, conda env: {conda_env}")
     
+    async def _get_conda_python_path(self) -> str:
+        """Get the Python executable path for the conda environment"""
+        try:
+            # Run conda info to get the Python path for the environment
+            result = await asyncio.create_subprocess_exec(
+                'conda', 'info', '--envs', '--json',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                import json
+                env_info = json.loads(stdout.decode())
+                envs = env_info.get('envs', [])
+                
+                # Find the environment path
+                for env_path in envs:
+                    if env_path.endswith(f'/envs/{self.conda_env}') or env_path.endswith(f'/{self.conda_env}'):
+                        python_path = os.path.join(env_path, 'bin', 'python')
+                        if os.path.exists(python_path):
+                            return python_path
+                        # Fallback for Windows
+                        python_path = os.path.join(env_path, 'python.exe')
+                        if os.path.exists(python_path):
+                            return python_path
+            
+            # Fallback: use conda run to get python path
+            result = await asyncio.create_subprocess_exec(
+                'conda', 'run', '-n', self.conda_env, 'which', 'python',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            if result.returncode == 0:
+                return stdout.decode().strip()
+                
+        except Exception as e:
+            logger.warning(f"Failed to get conda python path: {e}")
+        
+        # Ultimate fallback
+        return 'python'
+
     async def start(self):
         """Start the Python process"""
         try:
             if self.conda_env:
-                # Start bash shell and activate conda environment, then start Python
-                bash_cmd = [
-                    'bash', '-c',
-                    f'''
-                    source ~/.bashrc
-                    source $(conda info --base)/etc/profile.d/conda.sh
-                    conda activate {self.conda_env}
-                    python -u -i
-                    '''
-                ]
+                # Get the Python executable from the conda environment
+                python_executable = await self._get_conda_python_path()
+                logger.info(f"Using Python executable: {python_executable} for environment: {self.conda_env}")
+                
+                # Start Python directly with the environment's executable
                 self.process = await asyncio.create_subprocess_exec(
-                    *bash_cmd,
+                    python_executable, '-u', '-i',
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
@@ -98,9 +137,22 @@ class ExecutionInstance:
                 "import sys",
                 "import os", 
                 "import traceback",
-                f"os.chdir('{self.temp_dir}')",
-                "print('EXEC_ENGINE_READY')"
+                f"os.chdir('{self.temp_dir}')"
             ]
+            
+            # Add conda environment verification if using conda
+            if self.conda_env:
+                setup_commands.extend([
+                    f"print(f'Python executable: {{sys.executable}}')",
+                    f"print(f'Conda environment: {self.conda_env}')",
+                    "try:",
+                    "    import conda",
+                    "    print('Conda available in environment')",
+                    "except ImportError:",
+                    "    print('Conda not available (expected for some environments)')",
+                ])
+            
+            setup_commands.append("print('EXEC_ENGINE_READY')")
             
             for cmd in setup_commands:
                 self.process.stdin.write(f"{cmd}\n".encode())
