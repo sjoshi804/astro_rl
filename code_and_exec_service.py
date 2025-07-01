@@ -210,26 +210,40 @@ async def generate_single_trajectory(
     try:
         for step in range(1, max_turns + 1):
             try:
-                # Build trajectory object for completion server
-                trajectory_for_completion = {
-                    "turns": [
-                        {
-                            "step": turn.step,
-                            "prompt": turn.prompt,
-                            "code": turn.code,
-                            "execution_output": turn.execution_output,
-                            "execution_success": turn.execution_success
-                        }
-                        for turn in turns
-                    ]
-                }
+                # For first step, use structured trajectory. For subsequent steps, use concatenated string format
+                if step == 1:
+                    # First step: use structured trajectory format
+                    logger.info(f"Step {step}: Using structured trajectory format for initial prompt")
+                    trajectory_for_completion = {
+                        "turns": []
+                    }
+                    instruction_to_send = current_instruction
+                else:
+                    # After first step: concatenate all previous steps into a single string
+                    logger.info(f"Step {step}: Using concatenated string format with {len(turns)} previous turns")
+                    concatenated_history = ""
+                    for turn in turns:
+                        concatenated_history += f"Step {turn.step}:\n"
+                        concatenated_history += f"Prompt: {turn.prompt}\n"
+                        concatenated_history += f"Code:\n{turn.code}\n"
+                        concatenated_history += f"Execution Output: {turn.execution_output}\n"
+                        concatenated_history += "\n" + "="*60 + "\n\n"
+                    
+                    # Use empty trajectory since we're passing history as concatenated string
+                    trajectory_for_completion = {
+                        "turns": []
+                    }
+                    
+                    # Combine history with next step instruction
+                    instruction_to_send = f"{concatenated_history}{current_instruction}"
+                    logger.debug(f"Concatenated history length: {len(concatenated_history)} characters")
                 
-                # Step 1: Generate code completions using trajectory context
+                # Generate code completions using trajectory context
                 response = await http_client.post(
                     f"{COMPLETION_SERVER_URL}/generate",
                     json={
                         "trajectory": trajectory_for_completion,
-                        "instruction": current_instruction,
+                        "instruction": instruction_to_send,
                         "n": 4,
                         "temperature": 0.8,
                         "max_tokens": 512,
@@ -277,7 +291,7 @@ async def generate_single_trajectory(
                     break
                 
                 # Step 7: Update instruction for next turn
-                current_instruction = "Continue with the next code snippet to achieve the goal."
+                current_instruction = "Continue with the next code snippet to achieve the goal and fix any observed errors."
                 
             except Exception as e:
                 logger.error(f"Error in trajectory {trajectory_id} at step {step}: {e}")
@@ -525,6 +539,12 @@ EXPECTED API CONTRACTS FOR EXTERNAL SERVICES:
        "max_tokens": int,
        "stop": List[str]      # stop tokens
    }
+   
+   NOTE: For multi-turn trajectories:
+   - Step 1: trajectory.turns = [], instruction = initial prompt
+   - Step 2+: trajectory.turns = [], instruction = concatenated history + next prompt
+     where concatenated history format is:
+     "Step X:\nPrompt: <prompt>\nCode:\n<code>\nExecution Output: <output>\n============\n\n"
    Response: {
        "completions": List[str],
        "server_used": str

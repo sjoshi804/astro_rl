@@ -345,11 +345,18 @@ Generate Python code to accomplish this task. Make sure to:
         
         print("="*70)
     
-    def save_results(self, analysis: Dict[str, Any], filename: str = None):
+    def save_results(self, analysis: Dict[str, Any], filename: str = None, trajectory_dir: str = None):
         """Save results to JSON file"""
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"astronomy_generation_results_{timestamp}.json"
+        
+        # If trajectory directory is provided, save there
+        if trajectory_dir:
+            from pathlib import Path
+            trajectory_path = Path(trajectory_dir)
+            trajectory_path.mkdir(parents=True, exist_ok=True)
+            filename = trajectory_path / Path(filename).name
         
         try:
             with open(filename, 'w') as f:
@@ -358,11 +365,18 @@ Generate Python code to accomplish this task. Make sure to:
         except Exception as e:
             logger.error(f"Failed to save results: {e}")
     
-    def extract_final_code_snippets(self, results: List[Dict[str, Any]], output_file: str = None):
+    def extract_final_code_snippets(self, results: List[Dict[str, Any]], output_file: str = None, trajectory_dir: str = None):
         """Extract and save final working code snippets"""
         if output_file is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = f"astronomy_code_snippets_{timestamp}.py"
+        
+        # If trajectory directory is provided, save there
+        if trajectory_dir:
+            from pathlib import Path
+            trajectory_path = Path(trajectory_dir)
+            trajectory_path.mkdir(parents=True, exist_ok=True)
+            output_file = trajectory_path / Path(output_file).name
         
         try:
             with open(output_file, 'w') as f:
@@ -410,6 +424,8 @@ async def main():
                        help="File to save results (default: auto-generated)")
     parser.add_argument("--save-code", action="store_true",
                        help="Save extracted working code snippets to a Python file")
+    parser.add_argument("--trajectory-dir", default="./trajectories",
+                       help="Directory to save all output files (default: ./trajectories)")
     
     args = parser.parse_args()
     
@@ -421,6 +437,7 @@ async def main():
     logger.info(f"FITS file: {args.fits_file}")
     logger.info(f"Max turns: {args.max_turns}")
     logger.info(f"Timeout: {args.timeout}s")
+    logger.info(f"Output directory: {args.trajectory_dir}")
     
     generator = AstronomyDataGenerator(args.service_url, args.fits_file, args.timeout)
     
@@ -463,12 +480,12 @@ async def main():
     
     generator.print_summary(analysis)
     
-    # Save results
-    generator.save_results(analysis, args.output_file)
+    # Save results to trajectory directory
+    generator.save_results(analysis, args.output_file, args.trajectory_dir)
     
-    # Save working code snippets if requested
+    # Save working code snippets if requested, to trajectory directory
     if args.save_code:
-        generator.extract_final_code_snippets(results)
+        generator.extract_final_code_snippets(results, trajectory_dir=args.trajectory_dir)
     
     # Show some example successful results
     successful_results = [r for r in results if r["success"] and r["trajectory"]]
@@ -493,8 +510,28 @@ async def main():
     successful_count = sum(1 for r in results if r["success"])
     print(f"\n🎯 Successfully generated code for {successful_count}/{len(tasks)} astronomy visualization tasks")
     
+    # Show file output locations
+    from pathlib import Path
+    trajectory_path = Path(args.trajectory_dir)
+    print(f"\n📁 All files saved to: {trajectory_path.absolute()}")
+    
+    # List files that were created
+    if trajectory_path.exists():
+        json_files = list(trajectory_path.glob("*.json"))
+        py_files = list(trajectory_path.glob("*.py"))
+        
+        if json_files:
+            print(f"   📊 JSON files: {len(json_files)}")
+            for json_file in json_files:
+                print(f"      - {json_file.name}")
+        
+        if py_files:
+            print(f"   🐍 Python files: {len(py_files)}")
+            for py_file in py_files:
+                print(f"      - {py_file.name}")
+    
     if successful_count > 0:
-        print("✨ Generated code can be used for:")
+        print("\n✨ Generated code can be used for:")
         print("   - FITS file exploration and analysis")
         print("   - UV telescope image visualization")
         print("   - Astronomical data processing workflows")

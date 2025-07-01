@@ -5,7 +5,7 @@ Manages Python execution environments for multi-turn code interaction
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import uuid
 import re
 import asyncio
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 TIMEOUT_PER_STEP = None
 MAX_STEPS = None
 PROB_COMPLETION = None
+CONDA_ENV = None
 
 app = FastAPI(title="Code Execution Engine")
 
@@ -49,28 +50,48 @@ class ExecutionResponse(BaseModel):
 class ExecutionInstance:
     """Manages a single Python execution environment"""
     
-    def __init__(self, instance_id: str, timeout_per_step: int, max_steps: int, prob_completion: float):
+    def __init__(self, instance_id: str, timeout_per_step: int, max_steps: int, prob_completion: float, conda_env: Optional[str] = None):
         self.instance_id = instance_id
         self.timeout_per_step = timeout_per_step
         self.max_steps = max_steps
         self.prob_completion = prob_completion
+        self.conda_env = conda_env
         self.step_count = 0
         self.process = None
         self.created_at = datetime.now()
         self.temp_dir = tempfile.mkdtemp(prefix=f"exec_{instance_id}_")
-        logger.info(f"Created execution instance {instance_id} with temp dir {self.temp_dir}")
+        logger.info(f"Created execution instance {instance_id} with temp dir {self.temp_dir}, conda env: {conda_env}")
     
     async def start(self):
         """Start the Python process"""
         try:
-            # Start Python in interactive mode with unbuffered output
-            self.process = await asyncio.create_subprocess_exec(
-                'python', '-u', '-i',
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=self.temp_dir
-            )
+            if self.conda_env:
+                # Start bash shell and activate conda environment, then start Python
+                bash_cmd = [
+                    'bash', '-c',
+                    f'''
+                    source ~/.bashrc
+                    source $(conda info --base)/etc/profile.d/conda.sh
+                    conda activate {self.conda_env}
+                    python -u -i
+                    '''
+                ]
+                self.process = await asyncio.create_subprocess_exec(
+                    *bash_cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=self.temp_dir
+                )
+            else:
+                # Use default Python directly
+                self.process = await asyncio.create_subprocess_exec(
+                    'python', '-u', '-i',
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=self.temp_dir
+                )
             
             # Send initial setup commands
             setup_commands = [
@@ -131,7 +152,7 @@ class ExecutionInstance:
             )
         
         # Extract code from text
-        code = self._extract_code(text)
+        code, added_imports = self._extract_code(text)
         if not code:
             logger.warning(f"No parseable code found in input text: {text[:200]}...")
             return ExecutionResponse(
@@ -151,12 +172,18 @@ class ExecutionInstance:
                 timeout=self.timeout_per_step
             )
             
+            # Prepend import information if imports were added
+            if added_imports:
+                import_msg = f"Added suggested imports: {', '.join(added_imports)}\n\n"
+                output = import_msg + output
+            
             # Check completion criteria
             completion_status = self._check_completion()
             
             if completion_status:
                 state = "success"
             elif self.step_count >= self.max_steps:
+                logger.info(f"Step {self.step_count} completed with state: max_steps_exceeded")
                 state = "max_steps_exceeded"
             else:
                 state = "running"
@@ -184,8 +211,10 @@ class ExecutionInstance:
                 step_count=self.step_count
             )
     
-    def _extract_code(self, text: str) -> str:
+    def _extract_code(self, text: str) -> Tuple[str, List[str]]:
         """Extract code from text using improved heuristics"""
+        added_imports = []
+        
         # First, try to extract code blocks with ``` markers
         code_blocks = self._extract_code_blocks(text)
         if code_blocks:
@@ -193,18 +222,25 @@ class ExecutionInstance:
             valid_blocks = []
             for block in code_blocks:
                 cleaned = self._clean_code_block(block)
-                if cleaned and self._is_valid_python_code(cleaned):
-                    valid_blocks.append(cleaned)
+                if cleaned and len(cleaned.strip()) > 10:  # More lenient than _is_valid_python_code
+                    # Quick syntax check - if it has basic code patterns, include it
+                    if self._has_code_patterns(cleaned):
+                        valid_blocks.append(cleaned)
             
             if valid_blocks:
-                return '\n\n'.join(valid_blocks)
+                combined = '\n\n'.join(valid_blocks)
+                # Add missing imports to the combined code
+                combined, added_imports = self._add_missing_imports(combined)
+                return combined, added_imports
         
         # If no code blocks found, try to extract from the entire text
         cleaned_text = self._clean_and_filter_text(text)
-        if cleaned_text and self._is_valid_python_code(cleaned_text):
-            return cleaned_text
+        if cleaned_text and len(cleaned_text.strip()) > 10:
+            # Add missing imports and return
+            cleaned_text, added_imports = self._add_missing_imports(cleaned_text)
+            return cleaned_text, added_imports
         
-        return ""
+        return "", []
     
     def _extract_code_blocks(self, text: str) -> List[str]:
         """Extract all code blocks marked with ``` from text"""
@@ -369,9 +405,9 @@ class ExecutionInstance:
             # Other compilation errors might still be valid code
             return True
     
-    def _add_missing_imports(self, code: str) -> str:
+    def _add_missing_imports(self, code: str) -> Tuple[str, List[str]]:
         """Add commonly missing imports based on code content"""
-        imports_to_add = []
+        added_imports = []
         
         # Check for astropy usage
         if 'sigma_clip(' in code and 'from astropy.stats import' in code:
@@ -386,19 +422,19 @@ class ExecutionInstance:
                     break
             code = '\n'.join(lines)
         elif 'sigma_clip(' in code and 'from astropy.stats import' not in code:
-            imports_to_add.append('from astropy.stats import sigma_clip')
+            added_imports.append('from astropy.stats import sigma_clip')
         
         # Check for other common missing imports
         if 'plt.' in code and 'import matplotlib.pyplot' not in code:
-            imports_to_add.append('import matplotlib.pyplot as plt')
+            added_imports.append('import matplotlib.pyplot as plt')
         
         if 'np.' in code and 'import numpy' not in code:
-            imports_to_add.append('import numpy as np')
+            added_imports.append('import numpy as np')
             
-        if imports_to_add:
-            return '\n'.join(imports_to_add) + '\n\n' + code
+        if added_imports:
+            return '\n'.join(added_imports) + '\n\n' + code, added_imports
         
-        return code
+        return code, added_imports
     
     def _fix_common_syntax_issues(self, code: str) -> str:
         """Fix common syntax issues in extracted code"""
@@ -427,22 +463,21 @@ class ExecutionInstance:
         # Add a unique marker to identify end of output
         marker = f"EXEC_END_{uuid.uuid4().hex[:8]}"
         
-        # Prepare code with error handling and output marker
-        wrapped_code = f"""
-try:
-{self._indent_code(code)}
-except Exception as e:
-    print(f"Exception: {{e}}")
-    traceback.print_exc()
-print("{marker}")
-"""
+        # Clean and dedent the code to avoid indentation issues
+        cleaned_code = self._clean_code_for_execution(code)
+        
+        # Instead of wrapping in try-except (which causes indentation issues),
+        # send the code directly and handle errors separately
+        full_code = f"{cleaned_code}\nprint('{marker}')\n"
         
         # Send code to process
-        self.process.stdin.write(wrapped_code.encode())
+        self.process.stdin.write(full_code.encode())
         await self.process.stdin.drain()
         
         # Read output until we see our marker
         output_lines = []
+        error_detected = False
+        
         while True:
             line = await self.process.stdout.readline()
             if not line:
@@ -452,14 +487,73 @@ print("{marker}")
             if marker in line_str:
                 break
             
+            # Check for errors
+            if any(error_indicator in line_str for error_indicator in [
+                'SyntaxError:', 'IndentationError:', 'NameError:', 'TypeError:', 
+                'ValueError:', 'AttributeError:', 'ImportError:', 'Traceback'
+            ]):
+                error_detected = True
+            
             if line_str:  # Skip empty lines
                 output_lines.append(line_str)
         
-        return '\n'.join(output_lines) if output_lines else "No output"
+        result = '\n'.join(output_lines) if output_lines else "No output"
+        
+        # If errors were detected but no specific error output, add a note
+        if error_detected and result == "No output":
+            result = "Code execution encountered an error (see above for details)"
+        
+        return result
     
     def _indent_code(self, code: str) -> str:
         """Indent code for wrapping in try-except block"""
         return '\n'.join(f"    {line}" for line in code.splitlines())
+    
+    def _clean_code_for_execution(self, code: str) -> str:
+        """Clean and prepare code for execution in interactive shell"""
+        import textwrap
+        
+        # Remove any existing indentation to avoid conflicts
+        # This handles code that was already indented
+        cleaned_code = textwrap.dedent(code)
+        
+        # Split into lines and filter out problematic lines
+        lines = cleaned_code.split('\n')
+        clean_lines = []
+        
+        for line in lines:
+            # Skip lines that are execution artifacts or error messages
+            if any(artifact in line for artifact in [
+                'IndentationError:', 'SyntaxError:', 'File "<stdin>"', 
+                '^^^^', '>>>', 'Traceback (most recent call last):',
+                'Exception:', 'Error:'
+            ]):
+                continue
+            
+            # Skip lines that start with shell prompts
+            if line.strip().startswith('>>> ') or line.strip().startswith('... '):
+                # Extract the actual code after the prompt
+                if '>>> ' in line:
+                    line = line.split('>>> ', 1)[1]
+                elif '... ' in line:
+                    line = line.split('... ', 1)[1]
+            
+            # Keep the line
+            clean_lines.append(line)
+        
+        # Rejoin and ensure it ends with a newline
+        result = '\n'.join(clean_lines).strip()
+        
+        # If code is empty after cleaning, return empty string
+        if not result:
+            return ""
+        
+        # For multi-line code blocks, ensure proper execution by adding double newline at end
+        # This helps the interactive shell know when a block is complete
+        if any(line.rstrip().endswith(':') for line in result.split('\n')):
+            return result + '\n\n'
+        else:
+            return result + '\n' if not result.endswith('\n') else result
     
     def _check_completion(self) -> bool:
         """Check if execution should complete (random for now)"""
@@ -484,13 +578,63 @@ print("{marker}")
         except Exception as e:
             logger.warning(f"Failed to clean up temp dir {self.temp_dir}: {e}")
 
+    def _has_code_patterns(self, code: str) -> bool:
+        """Check if code has basic Python patterns (more lenient than full validation)"""
+        if not code.strip():
+            return False
+        
+        # Look for common Python patterns
+        patterns = [
+            r'import\s+\w+',  # imports
+            r'from\s+\w+\s+import',  # from imports
+            r'\w+\s*=\s*\w+',  # assignments
+            r'\w+\(\w*.*?\)',  # function calls
+            r'if\s+\w+',  # if statements
+            r'for\s+\w+\s+in',  # for loops
+            r'def\s+\w+\(',  # function definitions
+            r'print\s*\(',  # print statements
+            r'#\s*\w+',  # comments
+        ]
+        
+        code_lower = code.lower()
+        pattern_count = sum(1 for pattern in patterns if re.search(pattern, code_lower))
+        
+        # If we have multiple patterns or this looks like structured code, accept it
+        return pattern_count >= 2 or self._looks_like_structured_code(code)
+    
+    def _looks_like_structured_code(self, code: str) -> bool:
+        """Check if code has structural patterns that indicate it's Python code"""
+        lines = code.split('\n')
+        
+        # Count lines that look like code
+        code_like_lines = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Count lines with code indicators
+            if (line.startswith('#') or  # comments
+                '=' in line or  # assignments
+                line.endswith(':') or  # blocks
+                line.startswith('import ') or
+                line.startswith('from ') or
+                'print(' in line or
+                any(op in line for op in ['(', ')', '[', ']', '.'])):  # operators/syntax
+                code_like_lines += 1
+        
+        # If more than half the non-empty lines look like code, accept it
+        non_empty_lines = len([l for l in lines if l.strip()])
+        return non_empty_lines > 0 and (code_like_lines / non_empty_lines) >= 0.5
+
 class ExecutionManager:
     """Manages multiple execution instances"""
     
-    def __init__(self, timeout_per_step: int, max_steps: int, prob_completion: float):
+    def __init__(self, timeout_per_step: int, max_steps: int, prob_completion: float, conda_env: Optional[str] = None):
         self.timeout_per_step = timeout_per_step
         self.max_steps = max_steps
         self.prob_completion = prob_completion
+        self.conda_env = conda_env
         self.instances: Dict[str, ExecutionInstance] = {}
     
     async def create_instance(self) -> str:
@@ -501,7 +645,8 @@ class ExecutionManager:
             instance_id=instance_id,
             timeout_per_step=self.timeout_per_step,
             max_steps=self.max_steps,
-            prob_completion=self.prob_completion
+            prob_completion=self.prob_completion,
+            conda_env=self.conda_env
         )
         
         if await instance.start():
@@ -547,7 +692,8 @@ async def lifespan(app: FastAPI):
     execution_manager = ExecutionManager(
         timeout_per_step=TIMEOUT_PER_STEP,
         max_steps=MAX_STEPS,
-        prob_completion=PROB_COMPLETION
+        prob_completion=PROB_COMPLETION,
+        conda_env=CONDA_ENV
     )
     logger.info("Execution manager initialized")
     yield
@@ -594,10 +740,12 @@ async def get_stats():
         "timeout_per_step": TIMEOUT_PER_STEP,
         "max_steps": MAX_STEPS,
         "prob_completion": PROB_COMPLETION,
+        "conda_env": CONDA_ENV,
         "instances": {
             instance_id: {
                 "step_count": instance.step_count,
-                "created_at": instance.created_at.isoformat()
+                "created_at": instance.created_at.isoformat(),
+                "conda_env": instance.conda_env
             }
             for instance_id, instance in execution_manager.instances.items()
         }
@@ -617,10 +765,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Code Execution Engine")
     parser.add_argument("--timeout-per-step", type=int, default=10,
                        help="Timeout per execution step in seconds")
-    parser.add_argument("--max-steps", type=int, default=20,
+    parser.add_argument("--max-steps", type=int, default=10,
                        help="Maximum steps per execution instance")
     parser.add_argument("--prob-completion", type=float, default=0.1,
                        help="Probability of completion criteria being met (0.0-1.0)")
+    parser.add_argument("--conda-env", type=str, default=None,
+                       help="Conda environment name to use for execution")
     parser.add_argument("--host", default="0.0.0.0",
                        help="Host to bind the service")
     parser.add_argument("--port", type=int, default=8001,
@@ -634,11 +784,13 @@ if __name__ == "__main__":
     TIMEOUT_PER_STEP = args.timeout_per_step
     MAX_STEPS = args.max_steps
     PROB_COMPLETION = args.prob_completion
+    CONDA_ENV = args.conda_env
     
     logger.info(f"Starting Code Execution Engine")
     logger.info(f"Timeout per step: {TIMEOUT_PER_STEP}s")
     logger.info(f"Max steps: {MAX_STEPS}")
     logger.info(f"Completion probability: {PROB_COMPLETION}")
+    logger.info(f"Conda environment: {CONDA_ENV or 'default'}")
     
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

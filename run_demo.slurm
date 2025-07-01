@@ -50,6 +50,7 @@ export TIMEOUT_SECONDS="60"
 export TIMEOUT_PER_STEP="15"
 export MAX_STEPS="20"
 export PROB_COMPLETION="0.1"
+export CONDA_ENV="astro_rl"
 
 # Data Generation Configuration
 export TRAJECTORY_OUTPUT_DIR="./trajectories"
@@ -96,6 +97,7 @@ echo "Execution Node: $EXEC_NODE (port $EXEC_ENGINE_PORT)"
 echo "Orchestrator Node: $ORCHESTRATOR_NODE (ports $COMPLETION_SERVER_PORT, $CODE_EXEC_SERVICE_PORT)"
 echo "Model: $MODEL_PATH"
 echo "FITS File: $FITS_FILE_PATH"
+echo "Conda Environment: $CONDA_ENV"
 echo "==================================================================="
 
 # Create necessary directories
@@ -183,6 +185,7 @@ srun --nodes=1 --ntasks=1 --nodelist=$EXEC_NODE \
     --timeout-per-step $TIMEOUT_PER_STEP \
     --max-steps $MAX_STEPS \
     --prob-completion $PROB_COMPLETION \
+    --conda-env $CONDA_ENV \
     --host 0.0.0.0 \
     --port $EXEC_ENGINE_PORT \
     > logs/${SLURM_JOB_ID}/execution_engine.out \
@@ -269,6 +272,7 @@ DATA_GEN_ARGS=(
     --max-turns $GENERATION_MAX_TURNS
     --timeout $GENERATION_TIMEOUT
     --output-file "astronomy_generation_results_${SLURM_JOB_ID}.json"
+    --trajectory-dir "$TRAJECTORY_OUTPUT_DIR"
 )
 
 # Add concurrent execution if enabled
@@ -301,18 +305,22 @@ if [ $DATA_GEN_EXIT_CODE -eq 0 ]; then
     echo "✓ Data generation completed successfully!"
     
     # Display results summary
-    if [ -f "astronomy_generation_results_${SLURM_JOB_ID}.json" ]; then
-        echo "Results saved to: astronomy_generation_results_${SLURM_JOB_ID}.json"
+    if [ -f "$TRAJECTORY_OUTPUT_DIR/astronomy_generation_results_${SLURM_JOB_ID}.json" ]; then
+        echo "Results saved to: $TRAJECTORY_OUTPUT_DIR/astronomy_generation_results_${SLURM_JOB_ID}.json"
     fi
     
-    if [ -f "astronomy_code_snippets_*.py" ]; then
-        echo "Code snippets saved to: $(ls astronomy_code_snippets_*.py | head -1)"
+    # Check for code snippets in trajectory directory
+    CODE_SNIPPETS_FILE=$(find "$TRAJECTORY_OUTPUT_DIR" -name "astronomy_code_snippets_*.py" -type f | head -1)
+    if [ -n "$CODE_SNIPPETS_FILE" ]; then
+        echo "Code snippets saved to: $CODE_SNIPPETS_FILE"
     fi
     
-    # Count generated trajectories
+    # Count generated trajectory files
     if [ -d "$TRAJECTORY_OUTPUT_DIR" ]; then
-        TRAJECTORY_COUNT=$(find "$TRAJECTORY_OUTPUT_DIR" -name "*.json" | wc -l)
-        echo "Generated trajectories: $TRAJECTORY_COUNT"
+        TRAJECTORY_COUNT=$(find "$TRAJECTORY_OUTPUT_DIR" -name "trajectory_*.json" | wc -l)
+        TOTAL_FILES=$(find "$TRAJECTORY_OUTPUT_DIR" -type f | wc -l)
+        echo "Generated trajectory files: $TRAJECTORY_COUNT"
+        echo "Total files in trajectory directory: $TOTAL_FILES"
     fi
     
 else
