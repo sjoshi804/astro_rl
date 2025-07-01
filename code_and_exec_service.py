@@ -76,10 +76,12 @@ http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 # Utility Functions
 def save_trajectory_to_file(trajectory: Trajectory) -> str:
     """Save trajectory to a JSON file and return the file path"""
+    global TRAJECTORY_RUN_DIR  # Ensure we update the global variable
     if not TRAJECTORY_OUTPUT_DIR:
         return ""
     
     try:
+        # Resolve base directory (handles relative paths and ~)
         base_dir = Path(TRAJECTORY_OUTPUT_DIR)
         # Lazily create a run-specific subdirectory once per service run
         if TRAJECTORY_RUN_DIR is None:
@@ -140,32 +142,8 @@ def meets_completion_criteria(trajectory: List[Turn], criteria: Optional[str]) -
     return any(indicator in last_output for indicator in success_indicators)
 
 def calculate_reward(trajectory: List[Turn], termination_reason: str) -> float:
-    """Calculate reward for a completed trajectory"""
-    base_reward = 0.0
-    
-    # Completion bonus based on termination reason
-    if termination_reason == "completion_criteria_met":
-        base_reward += 1.0
-    elif termination_reason == "max_steps":
-        base_reward += 0.3
-    else:  # execution_error, generation_error, etc.
-        base_reward += 0.1
-    
-    # Execution success bonus
-    if trajectory:
-        successful_executions = sum(1 for turn in trajectory if turn.execution_success)
-        execution_rate = successful_executions / len(trajectory)
-        base_reward += execution_rate * 0.5
-        
-        # Progress bonus (more successful turns = more interaction)
-        progress_bonus = min(len(trajectory) / MAX_TURNS, 1.0) * 0.3
-        base_reward += progress_bonus
-        
-        # Bonus for trajectories that don't crash immediately
-        if len(trajectory) > 1:
-            base_reward += 0.2
-    
-    return min(base_reward, 2.0)  # Cap at 2.0
+    """Binary reward: 1 if completion criteria met, else 0"""
+    return 1.0 if termination_reason == "completion_criteria_met" else 0.0
 
 # API Endpoints
 
@@ -498,7 +476,7 @@ def parse_args():
                        help="Maximum number of turns per trajectory")
     parser.add_argument("--timeout", type=int, default=30,
                        help="HTTP timeout in seconds")
-    parser.add_argument("--trajectory-output-dir", default="./trajectories",
+    parser.add_argument("--trajectory-output-dir", default="/work/10450/sjoshi804/vista/astro_rl/trajectories",
                        help="Directory to save trajectory JSON files")
     parser.add_argument("--host", default="0.0.0.0",
                        help="Host to bind the service")

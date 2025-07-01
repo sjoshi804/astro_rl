@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 ASTRONOMY_TASKS = [
     "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",
     
-    "Create a simple grayscale visualization of the UV image with proper axis labels and a colorbar",
+#    "Create a simple grayscale visualization of the UV image with proper axis labels and a colorbar",
     
-    "Generate a histogram of pixel intensity values to understand the brightness distribution in the UV image"
+#    "Generate a histogram of pixel intensity values to understand the brightness distribution in the UV image"
     
 #     "Apply different color maps (viridis, plasma, hot) to the image and display them side by side for comparison",
     
@@ -43,7 +43,7 @@ ASTRONOMY_TASKS = [
 class AstronomyDataGenerator:
     """Generates astronomy data visualization tasks for the Code Generation & Execution Service"""
     
-    def __init__(self, service_url: str, fits_file_path: str, timeout: int = 180):
+    def __init__(self, service_url: str, fits_file_path: str, timeout: int = 900):
         self.service_url = service_url.rstrip('/')
         self.fits_file_path = fits_file_path
         self.timeout = timeout
@@ -398,7 +398,7 @@ async def main():
                        help="Path to the FITS file (Astro1 UV Imaging Telescope data)")
     parser.add_argument("--max-turns", type=int, default=8,
                        help="Maximum turns per trajectory")
-    parser.add_argument("--timeout", type=int, default=180,
+    parser.add_argument("--timeout", type=int, default=900,
                        help="Request timeout in seconds (longer for complex visualizations)")
     parser.add_argument("--concurrent", action="store_true",
                        help="Run tasks concurrently instead of sequentially")

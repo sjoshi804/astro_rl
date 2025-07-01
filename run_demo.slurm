@@ -37,8 +37,6 @@ export MODEL_PATH="Qwen/Qwen2.5-Coder-7B-Instruct"
 export FITS_FILE_PATH="/work/10450/sjoshi804/vista/astro_rl/astro1_uv_imaging_telescope.fits"
 
 # Service Ports (adjust if needed to avoid conflicts)
-export VLLM_WRAPPER_PORT_1="8100"
-export VLLM_WRAPPER_PORT_2="8101"
 export VLLM_SERVER_PORT_1="8200"
 export VLLM_SERVER_PORT_2="8201"
 export COMPLETION_SERVER_PORT="8000"
@@ -81,8 +79,8 @@ EXEC_NODE=${NODES[2]}
 ORCHESTRATOR_NODE=${NODES[3]}
 
 # Construct service URLs
-export VLLM_SERVER_1_URL="${VLLM_NODE_1}:${VLLM_WRAPPER_PORT_1}"
-export VLLM_SERVER_2_URL="${VLLM_NODE_2}:${VLLM_WRAPPER_PORT_2}"
+export VLLM_SERVER_1_URL="${VLLM_NODE_1}:${VLLM_SERVER_PORT_1}"
+export VLLM_SERVER_2_URL="${VLLM_NODE_2}:${VLLM_SERVER_PORT_2}"
 export COMPLETION_SERVER_URL="http://${ORCHESTRATOR_NODE}:${COMPLETION_SERVER_PORT}"
 export EXEC_ENGINE_URL="http://${EXEC_NODE}:${EXEC_ENGINE_PORT}"
 export CODE_EXEC_SERVICE_URL="http://${ORCHESTRATOR_NODE}:${CODE_EXEC_SERVICE_PORT}"
@@ -92,8 +90,8 @@ echo "RL ASTRONOMY PIPELINE JOB STARTING"
 echo "==================================================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Nodes allocated: ${NODES[@]}"
-echo "VLLM Node 1: $VLLM_NODE_1 (port $VLLM_WRAPPER_PORT_1)"
-echo "VLLM Node 2: $VLLM_NODE_2 (port $VLLM_WRAPPER_PORT_2)"
+echo "VLLM Node 1: $VLLM_NODE_1 (port $VLLM_SERVER_PORT_1)"
+echo "VLLM Node 2: $VLLM_NODE_2 (port $VLLM_SERVER_PORT_2)"
 echo "Execution Node: $EXEC_NODE (port $EXEC_ENGINE_PORT)"
 echo "Orchestrator Node: $ORCHESTRATOR_NODE (ports $COMPLETION_SERVER_PORT, $CODE_EXEC_SERVICE_PORT)"
 echo "Model: $MODEL_PATH"
@@ -153,10 +151,8 @@ srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_1 \
     python vllm_wrapper.py \
     --model-path "$MODEL_PATH" \
     --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
-    --vllm-port $VLLM_SERVER_PORT_1 \
-    --wrapper-port $VLLM_WRAPPER_PORT_1 \
-    --wrapper-host 0.0.0.0 \
-    --vllm-host 127.0.0.1 \
+    --port $VLLM_SERVER_PORT_1 \
+    --host 0.0.0.0 \
     > logs/${SLURM_JOB_ID}/vllm_wrapper_node1.out \
     2> logs/${SLURM_JOB_ID}/vllm_wrapper_node1.err &
 
@@ -167,10 +163,8 @@ srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_2 \
     python vllm_wrapper.py \
     --model-path "$MODEL_PATH" \
     --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
-    --vllm-port $VLLM_SERVER_PORT_2 \
-    --wrapper-port $VLLM_WRAPPER_PORT_2 \
-    --wrapper-host 0.0.0.0 \
-    --vllm-host 127.0.0.1 \
+    --port $VLLM_SERVER_PORT_2 \
+    --host 0.0.0.0 \
     > logs/${SLURM_JOB_ID}/vllm_wrapper_node2.out \
     2> logs/${SLURM_JOB_ID}/vllm_wrapper_node2.err &
 

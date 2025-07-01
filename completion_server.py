@@ -5,7 +5,7 @@ Load balances requests across multiple VLLM servers with model updating capabili
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import httpx
 import asyncio
 import logging
@@ -13,6 +13,7 @@ import argparse
 from datetime import datetime
 import itertools
 from contextlib import asynccontextmanager
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Global configuration
 VLLM_HOSTNAMES = []
 HEALTH_CHECK_INTERVAL = 10  # seconds
-REQUEST_TIMEOUT = 60  # seconds
+REQUEST_TIMEOUT = 300  # seconds (increased for large generations)
 
 # Data Models
 class Turn(BaseModel):
@@ -41,10 +42,14 @@ class GenerateCompletionRequest(BaseModel):
     temperature: float = 0.8
     max_tokens: int = 512
     stop: Optional[List[str]] = None
+    top_p: float = 1.0
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
 
 class GenerateCompletionResponse(BaseModel):
     completions: List[str]
     server_used: str
+    model_used: Optional[str] = None
 
 class UpdateModelRequest(BaseModel):
     model_path: str
@@ -57,6 +62,7 @@ class VLLMServer:
         self.is_healthy = False
         self.is_updating = False
         self.last_health_check = None
+        self.model_path = None
         self.base_url = f"http://{hostname}"
     
     async def health_check(self) -> bool:
@@ -64,7 +70,13 @@ class VLLMServer:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}/health")
-                self.is_healthy = response.status_code == 200
+                if response.status_code == 200:
+                    self.is_healthy = True
+                    health_data = response.json()
+                    self.model_path = health_data.get("model")
+                else:
+                    self.is_healthy = False
+                
                 self.last_health_check = datetime.now()
                 return self.is_healthy
         except Exception as e:
@@ -73,35 +85,65 @@ class VLLMServer:
             self.last_health_check = datetime.now()
             return False
     
-    async def generate_completion(self, prompt: str, **kwargs) -> Dict[str, Any]:
+    async def get_status(self) -> Dict[str, Any]:
+        """Get detailed status from VLLM server"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{self.base_url}/status")
+                if response.status_code == 200:
+                    return response.json()
+                return {}
+        except Exception:
+            return {}
+    
+    async def generate_completion(self, prompt: Union[str, List[str]], **kwargs) -> Dict[str, Any]:
         """Generate completion using this VLLM server"""
         if not self.is_healthy or self.is_updating:
             raise Exception(f"Server {self.hostname} is not available")
         
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                # Newer VLLM API: use chat completions only
-                chat_messages = [
-                    {"role": "user", "content": prompt}
-                ]
+                # Use the direct generate endpoint from our VLLM wrapper
                 response = await client.post(
-                    f"{self.base_url}/v1/chat/completions",
+                    f"{self.base_url}/generate",
                     json={
-                        "model": "current",
-                        "messages": chat_messages,
+                        "prompt": prompt,
                         "n": kwargs.get("n", 1),
                         "temperature": kwargs.get("temperature", 0.8),
                         "max_tokens": kwargs.get("max_tokens", 512),
-                        "stop": kwargs.get("stop", [])
+                        "top_p": kwargs.get("top_p", 1.0),
+                        "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
+                        "presence_penalty": kwargs.get("presence_penalty", 0.0),
+                        "stop": kwargs.get("stop"),
+                        "stream": False  # Always false for this use case
                     }
                 )
                 response.raise_for_status()
                 result = response.json()
                 
-                # Extract completions from chat response
-                completions = [choice["message"]["content"] for choice in result.get("choices", [])]
-                return {"completions": completions}
+                # Extract completions from response
+                if isinstance(prompt, str):
+                    # Single prompt response
+                    completions = [choice["text"] for choice in result.get("choices", [])]
+                    return {
+                        "completions": completions,
+                        "model": result.get("model")
+                    }
+                else:
+                    # Multiple prompts response
+                    all_completions = []
+                    for res in result.get("results", []):
+                        completions = [choice["text"] for choice in res.get("choices", [])]
+                        all_completions.extend(completions)
+                    return {
+                        "completions": all_completions,
+                        "model": result.get("results", [{}])[0].get("model") if result.get("results") else None
+                    }
                 
+        except httpx.TimeoutException:
+            logger.error(f"Request timeout for {self.hostname}")
+            self.is_healthy = False
+            raise Exception(f"Request to {self.hostname} timed out")
         except Exception as e:
             logger.error(f"Completion request failed for {self.hostname}: {e}")
             # Mark as unhealthy on failure
@@ -114,23 +156,34 @@ class VLLMServer:
         self.is_updating = True
         
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 minute timeout for model updates
+            async with httpx.AsyncClient(timeout=600.0) as client:  # 10 minute timeout for model updates
                 response = await client.post(
                     f"{self.base_url}/update_model_params",
                     json={"model_path": model_path}
                 )
                 response.raise_for_status()
+                result = response.json()
+                
+                if result.get("status") == "success":
+                    logger.info(f"Model update initiated for {self.hostname}")
+                else:
+                    logger.error(f"Model update failed for {self.hostname}: {result}")
+                    self.is_updating = False
+                    return False
             
-            # Wait for server to come back online
-            logger.info(f"Waiting for {self.hostname} to come back online...")
+            # Wait for server to come back online with new model
+            logger.info(f"Waiting for {self.hostname} to come back online with new model...")
             for attempt in range(60):  # Wait up to 5 minutes
                 await asyncio.sleep(5)
                 if await self.health_check():
-                    logger.info(f"Server {self.hostname} is back online after model update")
-                    self.is_updating = False
-                    return True
+                    # Verify the model was actually updated
+                    status = await self.get_status()
+                    if status.get("model_path") == model_path:
+                        logger.info(f"Server {self.hostname} successfully updated to {model_path}")
+                        self.is_updating = False
+                        return True
             
-            logger.error(f"Server {self.hostname} did not come back online after model update")
+            logger.error(f"Server {self.hostname} did not come back online with new model")
             self.is_updating = False
             return False
             
@@ -146,6 +199,8 @@ class CompletionServerManager:
         self.servers = [VLLMServer(hostname) for hostname in hostnames]
         self.round_robin_iterator = itertools.cycle(self.servers)
         self.health_check_task = None
+        self.request_counter = 0
+        self.server_request_counts = {server.hostname: 0 for server in self.servers}
     
     async def start_health_monitoring(self):
         """Start periodic health checking"""
@@ -192,7 +247,7 @@ class CompletionServerManager:
         return None
     
     def _build_prompt_from_trajectory(self, trajectory: Trajectory, instruction: str) -> str:
-        """Build a conversation-style prompt from trajectory"""
+        """Build a prompt from trajectory"""
         if not trajectory.turns:
             return f"{instruction}\n\nGenerate Python code to solve this problem:\n```python"
         
@@ -222,17 +277,25 @@ class CompletionServerManager:
         prompt = self._build_prompt_from_trajectory(request.trajectory, request.instruction)
         
         try:
+            # Track request count
+            self.request_counter += 1
+            self.server_request_counts[server.hostname] += 1
+            
             result = await server.generate_completion(
                 prompt=prompt,
                 n=request.n,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                frequency_penalty=request.frequency_penalty,
+                presence_penalty=request.presence_penalty,
                 stop=request.stop or ["```", "\nStep", "\nRequest:", "\nExecution"]
             )
             
             return GenerateCompletionResponse(
                 completions=result["completions"],
-                server_used=server.hostname
+                server_used=server.hostname,
+                model_used=result.get("model")
             )
             
         except Exception as e:
@@ -240,8 +303,13 @@ class CompletionServerManager:
             raise HTTPException(status_code=500, detail=f"Completion generation failed: {str(e)}")
     
     async def update_all_models(self, model_path: str) -> Dict[str, bool]:
-        """Update model on all servers sequentially"""
+        """Update model on all servers sequentially to maintain availability"""
         results = {}
+        
+        # Check if we have enough servers to maintain availability
+        available_count = sum(1 for s in self.servers if s.is_healthy and not s.is_updating)
+        if available_count <= 1 and len(self.servers) > 1:
+            logger.warning("Only one server available, updating all servers may cause downtime")
         
         for server in self.servers:
             logger.info(f"Updating model on server {server.hostname}")
@@ -252,6 +320,9 @@ class CompletionServerManager:
                 logger.error(f"Failed to update model on {server.hostname}")
             else:
                 logger.info(f"Successfully updated model on {server.hostname}")
+            
+            # Small delay between updates to avoid overwhelming the system
+            await asyncio.sleep(2)
         
         return results
 
@@ -269,7 +340,9 @@ async def lifespan(app: FastAPI):
     health_tasks = [server.health_check() for server in completion_manager.servers]
     await asyncio.gather(*health_tasks, return_exceptions=True)
     
-    logger.info(f"Completion server started with {len(VLLM_HOSTNAMES)} VLLM servers")
+    healthy_count = sum(1 for s in completion_manager.servers if s.is_healthy)
+    logger.info(f"Completion server started with {healthy_count}/{len(VLLM_HOSTNAMES)} healthy VLLM servers")
+    
     yield
     
     await completion_manager.stop_health_monitoring()
@@ -282,11 +355,16 @@ app = FastAPI(title="Completion Server", lifespan=lifespan)
 @app.post("/generate", response_model=GenerateCompletionResponse)
 async def generate_completion(request: GenerateCompletionRequest):
     """Generate code completions from trajectory"""
+    if not completion_manager:
+        raise HTTPException(status_code=503, detail="Server not initialized")
     return await completion_manager.generate_completion(request)
 
 @app.post("/update_model_params")
 async def update_model_params(request: UpdateModelRequest):
     """Update model parameters on all VLLM servers"""
+    if not completion_manager:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    
     results = await completion_manager.update_all_models(request.model_path)
     
     success_count = sum(1 for success in results.values() if success)
@@ -297,7 +375,8 @@ async def update_model_params(request: UpdateModelRequest):
         "updated_servers": success_count,
         "total_servers": total_count,
         "results": results,
-        "success": success_count == total_count
+        "success": success_count == total_count,
+        "model_path": request.model_path
     }
 
 @app.get("/health")
@@ -306,14 +385,15 @@ async def health_check():
     if not completion_manager:
         return {"status": "starting"}
     
-    server_status = {
-        server.hostname: {
+    server_status = {}
+    for server in completion_manager.servers:
+        status_info = {
             "healthy": server.is_healthy,
             "updating": server.is_updating,
-            "last_check": server.last_health_check.isoformat() if server.last_health_check else None
+            "last_check": server.last_health_check.isoformat() if server.last_health_check else None,
+            "model": server.model_path
         }
-        for server in completion_manager.servers
-    }
+        server_status[server.hostname] = status_info
     
     available_count = sum(1 for server in completion_manager.servers 
                          if server.is_healthy and not server.is_updating)
@@ -331,21 +411,43 @@ async def get_stats():
     if not completion_manager:
         return {"error": "Manager not initialized"}
     
+    # Get detailed status for each server
+    server_details = []
+    for server in completion_manager.servers:
+        detail = {
+            "hostname": server.hostname,
+            "healthy": server.is_healthy,
+            "updating": server.is_updating,
+            "last_health_check": server.last_health_check.isoformat() if server.last_health_check else None,
+            "model": server.model_path,
+            "request_count": completion_manager.server_request_counts.get(server.hostname, 0)
+        }
+        server_details.append(detail)
+    
     return {
         "total_servers": len(completion_manager.servers),
         "healthy_servers": sum(1 for s in completion_manager.servers if s.is_healthy),
         "updating_servers": sum(1 for s in completion_manager.servers if s.is_updating),
         "available_servers": sum(1 for s in completion_manager.servers 
                                 if s.is_healthy and not s.is_updating),
-        "server_details": [
-            {
-                "hostname": server.hostname,
-                "healthy": server.is_healthy,
-                "updating": server.is_updating,
-                "last_health_check": server.last_health_check.isoformat() if server.last_health_check else None
-            }
-            for server in completion_manager.servers
-        ]
+        "total_requests": completion_manager.request_counter,
+        "server_details": server_details
+    }
+
+@app.get("/models")
+async def list_models():
+    """List models currently loaded on each server"""
+    if not completion_manager:
+        return {"error": "Manager not initialized"}
+    
+    models = {}
+    for server in completion_manager.servers:
+        if server.is_healthy and server.model_path:
+            models[server.hostname] = server.model_path
+    
+    return {
+        "models": models,
+        "unique_models": list(set(models.values()))
     }
 
 def parse_args():
@@ -359,7 +461,7 @@ def parse_args():
                        help="Port to bind the service")
     parser.add_argument("--health-check-interval", type=int, default=10,
                        help="Health check interval in seconds")
-    parser.add_argument("--request-timeout", type=int, default=60,
+    parser.add_argument("--request-timeout", type=int, default=300,
                        help="Request timeout in seconds")
     return parser.parse_args()
 

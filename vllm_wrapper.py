@@ -1,22 +1,22 @@
 """
 VLLM Server Wrapper
-Wraps the VLLM OpenAI API server with model updating capability
+Wraps VLLM with direct LLM() integration and model updating capability
 """
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-import httpx
 import asyncio
-import subprocess
-import signal
-import os
 import logging
 import argparse
-import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Union
 from contextlib import asynccontextmanager
 import json
 from datetime import datetime
+import time
+from vllm import LLM, SamplingParams
+from vllm.outputs import RequestOutput
+import torch
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,212 +25,294 @@ logger = logging.getLogger(__name__)
 # Global configuration
 VLLM_MODEL_PATH = None
 TENSOR_PARALLEL_SIZE = 1
-VLLM_HOST = "127.0.0.1"
-VLLM_PORT = None
 WRAPPER_PORT = None
 
 class UpdateModelRequest(BaseModel):
     model_path: str
 
-class VLLMProcess:
-    """Manages the VLLM server process"""
+from typing import Union, List, Optional
+from pydantic import BaseModel
+
+class GenerateRequest(BaseModel):
+    prompt: Union[str, List[str]]
+    max_tokens: int = 100
+    temperature: float = 0.7
+    top_p: float = 1.0
+    top_k: int = -1
+    logprobs: Optional[int] = None
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    messages: List[ChatMessage]
+    model: Optional[str] = None
+    max_tokens: int = 100
+    temperature: float = 0.7
+    top_p: float = 1.0
+    top_k: int = -1
+
+class VLLMManager:
+    """Manages the VLLM LLM instance"""
     
-    def __init__(self, model_path: str, tensor_parallel_size: int, host: str, port: int):
+    def __init__(self, model_path: str, tensor_parallel_size: int):
         self.model_path = model_path
         self.tensor_parallel_size = tensor_parallel_size
-        self.host = host
-        self.port = port
-        self.process: Optional[subprocess.Popen] = None
-        self.base_url = f"http://{host}:{port}"
+        self.llm: Optional[LLM] = None
+        self._lock = asyncio.Lock()
     
-    async def start(self) -> bool:
-        """Start the VLLM server process"""
-        if self.process and self.process.poll() is None:
-            logger.warning("VLLM process is already running")
-            return True
-        
-        logger.info(f"Starting VLLM server with model: {self.model_path}")
-        
-        cmd = [
-            "python", "-m", "vllm.entrypoints.openai.api_server",
-            "--model", self.model_path,
-            "--tensor-parallel-size", str(self.tensor_parallel_size),
-            "--host", self.host,
-            "--port", str(self.port)
-        ]
-        
+    async def initialize(self) -> bool:
+        """Initialize the VLLM LLM instance"""
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=os.setsid  # Create new process group for clean shutdown
+            logger.info(f"Initializing VLLM with model: {self.model_path}")
+            
+            # Initialize LLM with the specified configuration
+            self.llm = LLM(
+                model=self.model_path,
+                tensor_parallel_size=self.tensor_parallel_size,
+                trust_remote_code=True,  # Enable for custom models
+                dtype="auto",  # Auto-detect dtype
+                gpu_memory_utilization=0.95,  # Use most of GPU memory
             )
             
-            logger.info(f"VLLM process started with PID: {self.process.pid}")
-            
-            # Wait for server to be ready
-            if await self._wait_for_ready():
-                logger.info("VLLM server is ready")
-                return True
-            else:
-                logger.error("VLLM server failed to start properly")
-                await self.stop()
-                return False
-                
-        except Exception as e:
-            logger.error(f"Failed to start VLLM server: {e}")
-            return False
-    
-    async def stop(self) -> bool:
-        """Stop the VLLM server process"""
-        if not self.process:
+            logger.info("VLLM LLM initialized successfully")
             return True
-        
-        logger.info("Stopping VLLM server")
-        
-        try:
-            # Send SIGTERM to the process group
-            os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
             
-            # Wait for graceful shutdown
-            try:
-                await asyncio.wait_for(
-                    asyncio.create_task(self._wait_for_process_end()),
-                    timeout=30.0
-                )
-                logger.info("VLLM server stopped gracefully")
-                return True
-            except asyncio.TimeoutError:
-                logger.warning("VLLM server didn't stop gracefully, forcing kill")
-                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                await self._wait_for_process_end()
-                logger.info("VLLM server force killed")
-                return True
-                
         except Exception as e:
-            logger.error(f"Error stopping VLLM server: {e}")
+            logger.error(f"Failed to initialize VLLM: {e}")
             return False
-        finally:
-            self.process = None
     
-    async def restart_with_new_model(self, model_path: str) -> bool:
-        """Restart VLLM server with a new model"""
-        logger.info(f"Restarting VLLM server with new model: {model_path}")
-        
-        # Stop current process
-        if not await self.stop():
-            logger.error("Failed to stop current VLLM server")
-            return False
-        
-        # Update model path
-        self.model_path = model_path
-        
-        # Start with new model
-        return await self.start()
+    async def shutdown(self):
+        """Shutdown the VLLM instance"""
+        if self.llm:
+            logger.info("Shutting down VLLM")
+            # Clean up GPU memory
+            del self.llm
+            self.llm = None
+            torch.cuda.empty_cache()
     
-    async def _wait_for_ready(self, timeout: int = 300) -> bool:
-        """Wait for VLLM server to be ready"""
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(f"{self.base_url}/health")
-                    if response.status_code == 200:
-                        return True
-            except Exception:
-                pass
+    async def update_model(self, model_path: str) -> bool:
+        """Update to a new model"""
+        async with self._lock:
+            logger.info(f"Updating model from {self.model_path} to {model_path}")
             
-            # Check if process is still running
-            if self.process and self.process.poll() is not None:
-                logger.error("VLLM process terminated unexpectedly")
-                return False
+            # Shutdown current model
+            await self.shutdown()
             
-            await asyncio.sleep(2)
+            # Update model path
+            self.model_path = model_path
+            
+            # Initialize with new model
+            return await self.initialize()
+    
+    async def generate(self, prompt: Union[str, List[str]], sampling_params: SamplingParams) -> List[RequestOutput]:
+        """Generate completions for the given prompt(s)"""
+        if not self.llm:
+            raise RuntimeError("VLLM not initialized")
         
-        logger.error(f"VLLM server did not become ready within {timeout} seconds")
-        return False
+        # Run generation in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self.llm.generate,
+            prompt,
+            sampling_params
+        )
     
-    async def _wait_for_process_end(self):
-        """Wait for the process to end"""
-        while self.process and self.process.poll() is None:
-            await asyncio.sleep(0.1)
-    
-    def is_running(self) -> bool:
-        """Check if VLLM process is running"""
-        return self.process is not None and self.process.poll() is None
-    
-    async def proxy_request(self, request: Request) -> Dict[str, Any]:
-        """Proxy a request to the VLLM server"""
-        if not self.is_running():
-            raise HTTPException(status_code=503, detail="VLLM server is not running")
+    def format_chat_prompt(self, messages: List[ChatMessage]) -> str:
+        """Format chat messages into a prompt string"""
+        # This is a simple format - you may want to customize based on your model
+        prompt = ""
+        for message in messages:
+            if message.role == "system":
+                prompt += f"System: {message.content}\n"
+            elif message.role == "user":
+                prompt += f"User: {message.content}\n"
+            elif message.role == "assistant":
+                prompt += f"Assistant: {message.content}\n"
         
-        # Build target URL (no legacy translation, vllm 0.8.6 supports chat endpoint natively)
-        path = request.url.path
-        query = str(request.url.query) if request.url.query else ""
-        target_url = f"{self.base_url}{path}"
-        if query:
-            target_url += f"?{query}"
+        # Add the assistant prompt prefix
+        prompt += "Assistant: "
+        return prompt
 
-        body = await request.body()
-
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=dict(request.headers),
-                content=body
-            )
-
-        return {
-            "status_code": response.status_code,
-            "content": response.content,
-            "headers": dict(response.headers)
-        }
-
-# Global VLLM process manager
-vllm_process: Optional[VLLMProcess] = None
+# Global VLLM manager
+vllm_manager: Optional[VLLMManager] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
-    global vllm_process
+    global vllm_manager
     
-    vllm_process = VLLMProcess(
+    vllm_manager = VLLMManager(
         model_path=VLLM_MODEL_PATH,
-        tensor_parallel_size=TENSOR_PARALLEL_SIZE,
-        host=VLLM_HOST,
-        port=VLLM_PORT
+        tensor_parallel_size=TENSOR_PARALLEL_SIZE
     )
     
-    # Start VLLM server
-    if await vllm_process.start():
+    # Initialize VLLM
+    if await vllm_manager.initialize():
         logger.info("VLLM wrapper started successfully")
     else:
-        logger.error("Failed to start VLLM server")
-        raise RuntimeError("Failed to start VLLM server")
+        logger.error("Failed to initialize VLLM")
+        raise RuntimeError("Failed to initialize VLLM")
     
     yield
     
     # Cleanup on shutdown
-    if vllm_process:
-        await vllm_process.stop()
+    if vllm_manager:
+        await vllm_manager.shutdown()
     logger.info("VLLM wrapper shutdown complete")
 
 app = FastAPI(title="VLLM Server Wrapper", lifespan=lifespan)
 
 # API Endpoints
 
+@app.post("/generate")
+async def generate(request: GenerateRequest):
+    """Generate completions for the given prompt(s)"""
+    if not vllm_manager:
+        raise HTTPException(status_code=500, detail="VLLM not initialized")
+    
+    # Create sampling parameters
+    sampling_params = SamplingParams(
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        logprobs=request.logprobs,
+    )
+    
+    try:
+        # Generate completions
+        outputs = await vllm_manager.generate(request.prompt, sampling_params)
+        
+        # Format response
+        if isinstance(request.prompt, str):
+            # Single prompt
+            output = outputs[0]
+            return {
+                "id": f"gen-{int(time.time() * 1000)}",
+                "object": "text_completion",
+                "created": int(time.time()),
+                "model": vllm_manager.model_path,
+                "choices": [
+                    {
+                        "text": completion.text,
+                        "index": i,
+                        "logprobs": completion.logprobs if request.logprobs else None,
+                        "finish_reason": completion.finish_reason,
+                    }
+                    for i, completion in enumerate(output.outputs)
+                ],
+                "usage": {
+                    "prompt_tokens": len(output.prompt_token_ids),
+                    "completion_tokens": sum(len(c.token_ids) for c in output.outputs),
+                    "total_tokens": len(output.prompt_token_ids) + sum(len(c.token_ids) for c in output.outputs),
+                }
+            }
+        else:
+            # Multiple prompts
+            results = []
+            for output in outputs:
+                results.append({
+                    "id": f"gen-{int(time.time() * 1000)}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": vllm_manager.model_path,
+                    "choices": [
+                        {
+                            "text": completion.text,
+                            "index": i,
+                            "logprobs": completion.logprobs if request.logprobs else None,
+                            "finish_reason": completion.finish_reason,
+                        }
+                        for i, completion in enumerate(output.outputs)
+                    ],
+                    "usage": {
+                        "prompt_tokens": len(output.prompt_token_ids),
+                        "completion_tokens": sum(len(c.token_ids) for c in output.outputs),
+                        "total_tokens": len(output.prompt_token_ids) + sum(len(c.token_ids) for c in output.outputs),
+                    }
+                })
+            return {"results": results}
+            
+    except Exception as e:
+        logger.error(f"Generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    """OpenAI-compatible chat completions endpoint"""
+    if not vllm_manager:
+        raise HTTPException(status_code=500, detail="VLLM not initialized")
+    
+    # Convert chat messages to prompt
+    prompt = vllm_manager.format_chat_prompt(request.messages)
+    
+    # Create sampling parameters
+    sampling_params = SamplingParams(
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        frequency_penalty=request.frequency_penalty,
+        presence_penalty=request.presence_penalty,
+        stop=request.stop,
+        n=request.n,
+        seed=request.seed,
+    )
+    
+    try:
+        # Generate completions
+        outputs = await vllm_manager.generate(prompt, sampling_params)
+        output = outputs[0]
+        
+        # Format response in OpenAI format
+        response = {
+            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model or vllm_manager.model_path,
+            "choices": [
+                {
+                    "index": i,
+                    "message": {
+                        "role": "assistant",
+                        "content": completion.text,
+                    },
+                    "finish_reason": completion.finish_reason,
+                }
+                for i, completion in enumerate(output.outputs)
+            ],
+            "usage": {
+                "prompt_tokens": len(output.prompt_token_ids),
+                "completion_tokens": sum(len(c.token_ids) for c in output.outputs),
+                "total_tokens": len(output.prompt_token_ids) + sum(len(c.token_ids) for c in output.outputs),
+            }
+        }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Chat completion error: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat completion failed: {str(e)}")
+
+@app.post("/v1/completions")
+async def completions(request: GenerateRequest):
+    """OpenAI-compatible completions endpoint"""
+    # This just wraps the generate endpoint with OpenAI response format
+    return await generate(request)
+
 @app.post("/update_model_params")
 async def update_model_params(request: UpdateModelRequest):
-    """Update the model parameters by restarting with new model"""
-    if not vllm_process:
-        raise HTTPException(status_code=500, detail="VLLM process not initialized")
+    """Update the model parameters by loading a new model"""
+    if not vllm_manager:
+        raise HTTPException(status_code=500, detail="VLLM not initialized")
     
     logger.info(f"Updating model to: {request.model_path}")
     
-    success = await vllm_process.restart_with_new_model(request.model_path)
+    success = await vllm_manager.update_model(request.model_path)
     
     if success:
         return {
@@ -246,59 +328,47 @@ async def update_model_params(request: UpdateModelRequest):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    if not vllm_process or not vllm_process.is_running():
-        raise HTTPException(status_code=503, detail="VLLM server is not running")
-    
-    # Also check if VLLM server is responding
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{vllm_process.base_url}/health")
-            if response.status_code == 200:
-                return {"status": "healthy", "vllm_status": "running"}
-            else:
-                raise HTTPException(status_code=503, detail="VLLM server is not responding")
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"VLLM server health check failed: {e}")
+    """Health check endpoint (returns 200 only if healthy)"""
+    if vllm_manager and vllm_manager.llm:
+        return {
+            "status": "healthy",
+            "model": vllm_manager.model_path,
+            "tensor_parallel_size": vllm_manager.tensor_parallel_size
+        }
+    else:
+        raise HTTPException(status_code=503, detail="VLLM not initialized or not healthy")
 
-@app.get("/wrapper_status")
-async def wrapper_status():
-    """Get wrapper and VLLM server status"""
-    if not vllm_process:
-        return {"wrapper_status": "not_initialized"}
+@app.get("/v1/models")
+async def list_models():
+    """List available models (OpenAI-compatible)"""
+    if not vllm_manager:
+        raise HTTPException(status_code=503, detail="VLLM not initialized")
     
     return {
-        "wrapper_status": "running",
-        "vllm_status": "running" if vllm_process.is_running() else "stopped",
-        "model_path": vllm_process.model_path,
-        "vllm_url": vllm_process.base_url,
-        "process_pid": vllm_process.process.pid if vllm_process.process else None
+        "data": [
+            {
+                "id": vllm_manager.model_path,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "vllm",
+            }
+        ]
     }
 
-# Proxy all other requests to VLLM server
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_to_vllm(request: Request, path: str):
-    """Proxy all other requests to the VLLM server"""
-    if not vllm_process:
-        raise HTTPException(status_code=503, detail="VLLM process not initialized")
+@app.get("/status")
+async def status():
+    """Get detailed status information"""
+    if not vllm_manager:
+        return {"status": "not_initialized"}
     
-    try:
-        result = await vllm_process.proxy_request(request)
-        
-        from fastapi import Response
-        return Response(
-            content=result["content"],
-            status_code=result["status_code"],
-            headers=dict(result["headers"])
-        )
-        
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Request to VLLM server timed out")
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail="Cannot connect to VLLM server")
-    except Exception as e:
-        logger.error(f"Error proxying request: {e}")
-        raise HTTPException(status_code=500, detail=f"Proxy error: {str(e)}")
+    return {
+        "status": "running",
+        "model_path": vllm_manager.model_path,
+        "tensor_parallel_size": vllm_manager.tensor_parallel_size,
+        "llm_initialized": vllm_manager.llm is not None,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+    }
 
 def parse_args():
     """Parse command line arguments"""
@@ -307,13 +377,9 @@ def parse_args():
                        help="Path to the model to load")
     parser.add_argument("--tensor-parallel-size", type=int, default=1,
                        help="Tensor parallel size for VLLM")
-    parser.add_argument("--vllm-host", default="127.0.0.1",
-                       help="Host for the VLLM server")
-    parser.add_argument("--vllm-port", type=int, required=True,
-                       help="Port for the VLLM server")
-    parser.add_argument("--wrapper-host", default="0.0.0.0",
+    parser.add_argument("--host", default="0.0.0.0",
                        help="Host for the wrapper service")
-    parser.add_argument("--wrapper-port", type=int, required=True,
+    parser.add_argument("--port", type=int, required=True,
                        help="Port for the wrapper service")
     return parser.parse_args()
 
@@ -323,15 +389,12 @@ if __name__ == "__main__":
     # Set global configuration
     VLLM_MODEL_PATH = args.model_path
     TENSOR_PARALLEL_SIZE = args.tensor_parallel_size
-    VLLM_HOST = args.vllm_host
-    VLLM_PORT = args.vllm_port
-    WRAPPER_PORT = args.wrapper_port
+    WRAPPER_PORT = args.port
     
     logger.info(f"Starting VLLM Wrapper")
     logger.info(f"Model path: {VLLM_MODEL_PATH}")
-    logger.info(f"VLLM server: {VLLM_HOST}:{VLLM_PORT}")
-    logger.info(f"Wrapper port: {WRAPPER_PORT}")
+    logger.info(f"Wrapper address: {args.host}:{WRAPPER_PORT}")
     logger.info(f"Tensor parallel size: {TENSOR_PARALLEL_SIZE}")
     
     import uvicorn
-    uvicorn.run(app, host=args.wrapper_host, port=WRAPPER_PORT)
+    uvicorn.run(app, host=args.host, port=WRAPPER_PORT)

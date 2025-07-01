@@ -5,7 +5,7 @@ Manages Python execution environments for multi-turn code interaction
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import uuid
 import re
 import asyncio
@@ -133,6 +133,7 @@ class ExecutionInstance:
         # Extract code from text
         code = self._extract_code(text)
         if not code:
+            logger.warning(f"No parseable code found in input text: {text[:200]}...")
             return ExecutionResponse(
                 output="ERROR: No parseable code found in input",
                 state="running",
@@ -141,6 +142,7 @@ class ExecutionInstance:
         
         self.step_count += 1
         logger.info(f"Executing step {self.step_count} in instance {self.instance_id}")
+        logger.debug(f"Extracted code for execution:\n{code}")
         
         try:
             # Execute the code with timeout
@@ -158,6 +160,8 @@ class ExecutionInstance:
                 state = "max_steps_exceeded"
             else:
                 state = "running"
+            
+            logger.info(f"Step {self.step_count} completed with state: {state}")
             
             return ExecutionResponse(
                 output=output,
@@ -181,50 +185,242 @@ class ExecutionInstance:
             )
     
     def _extract_code(self, text: str) -> str:
-        """Extract code from text using simple heuristics"""
-        # Try to find code blocks with ``` (both python and generic)
-        code_block_pattern = r'```(?:python)?\s*\n?(.*?)(?:\n```|$)'
-        matches = re.findall(code_block_pattern, text, re.DOTALL | re.IGNORECASE)
+        """Extract code from text using improved heuristics"""
+        # First, try to extract code blocks with ``` markers
+        code_blocks = self._extract_code_blocks(text)
+        if code_blocks:
+            # Combine all valid code blocks
+            valid_blocks = []
+            for block in code_blocks:
+                cleaned = self._clean_code_block(block)
+                if cleaned and self._is_valid_python_code(cleaned):
+                    valid_blocks.append(cleaned)
+            
+            if valid_blocks:
+                return '\n\n'.join(valid_blocks)
         
-        if matches:
-            # Return the first code block found, cleaned up
-            code = matches[0].strip()
-            # Remove any trailing ``` that might have been captured
-            if code.endswith('```'):
-                code = code[:-3].strip()
-            return code
-        
-        # Try to find inline code with single backticks
-        inline_code_pattern = r'`([^`]+)`'
-        inline_matches = re.findall(inline_code_pattern, text)
-        
-        if inline_matches:
-            # Join multiple inline code snippets
-            return '\n'.join(match.strip() for match in inline_matches)
-        
-        # If no code blocks found, try to identify if the entire text looks like code
-        if self._looks_like_code(text):
-            return text.strip()
+        # If no code blocks found, try to extract from the entire text
+        cleaned_text = self._clean_and_filter_text(text)
+        if cleaned_text and self._is_valid_python_code(cleaned_text):
+            return cleaned_text
         
         return ""
     
-    def _looks_like_code(self, text: str) -> bool:
-        """Simple heuristic to determine if text looks like Python code"""
-        code_indicators = [
-            'def ', 'class ', 'import ', 'from ', 'if ', 'for ', 'while ',
-            'try:', 'except:', 'print(', 'return ', '= ', '+= ', '-= ',
-            'lambda ', 'with ', 'assert ', 'yield ', 'async ', 'await '
+    def _extract_code_blocks(self, text: str) -> List[str]:
+        """Extract all code blocks marked with ``` from text"""
+        # Pattern to match code blocks with optional language specification
+        pattern = r'```(?:python|py)?\s*\n?(.*?)(?:\n```|```|$)'
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        return matches
+    
+    def _clean_code_block(self, code: str) -> str:
+        """Clean up a code block by removing common artifacts"""
+        # Remove trailing ``` if present
+        if code.endswith('```'):
+            code = code[:-3]
+        
+        # Split into lines for processing
+        lines = code.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip empty lines at the beginning, but keep them in the middle/end for structure
+            if not line and not cleaned_lines:
+                continue
+                
+            # Skip lines that look like markdown or explanatory text
+            if self._is_explanatory_line(line):
+                continue
+                
+            # Skip lines with common artifacts
+            if any(artifact in line.lower() for artifact in [
+                'this code snippet', 'the code above', 'step 1:', 'step 2:',
+                'created question:', 'created answer:', '### ', '# step',
+                'execution ✓:', 'indentationerror:', 'syntaxerror:'
+            ]):
+                continue
+            
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    def _is_explanatory_line(self, line: str) -> bool:
+        """Check if a line is explanatory text rather than code"""
+        line_lower = line.lower().strip()
+        
+        # Skip lines that are clearly explanatory
+        explanatory_patterns = [
+            r'^#+\s',  # Markdown headers
+            r'^to\s+\w+',  # "To calculate...", "To modify..."
+            r'^this\s+code',  # "This code snippet..."
+            r'^how\s+would',  # Questions
+            r'^you\s+can',  # Instructions
+            r'^\*\s',  # Bullet points
+            r'^-\s',   # Dash bullet points
+            r'execution\s+✓',  # Execution markers
+            r'^\d+\.\s',  # Numbered lists
         ]
         
-        text_lower = text.lower().strip()
-        # Check if text contains multiple code indicators or looks structured
-        indicator_count = sum(1 for indicator in code_indicators if indicator in text_lower)
+        for pattern in explanatory_patterns:
+            if re.match(pattern, line_lower):
+                return True
         
-        # Also check for Python-like patterns
-        has_indentation = any(line.startswith('    ') or line.startswith('\t') for line in text.split('\n'))
-        has_colon_newline = ':' in text and '\n' in text
+        # Skip very short lines that are likely headers or separators
+        if len(line.strip()) < 3:
+            return False
+            
+        # Check if line has no Python syntax at all
+        python_indicators = ['=', '(', ')', '[', ']', '.', 'import', 'def', 'if', 'for', 'print']
+        if not any(indicator in line for indicator in python_indicators):
+            # But allow comments
+            if not line.strip().startswith('#'):
+                return True
         
-        return indicator_count >= 2 or (indicator_count >= 1 and (has_indentation or has_colon_newline))
+        return False
+    
+    def _clean_and_filter_text(self, text: str) -> str:
+        """Clean text and filter out non-code content"""
+        lines = text.split('\n')
+        code_lines = []
+        
+        in_code_section = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Skip empty lines at the start
+            if not line_stripped and not code_lines:
+                continue
+            
+            # Skip explanatory sections
+            if self._is_explanatory_line(line_stripped):
+                in_code_section = False
+                continue
+            
+            # Detect start of code sections
+            if self._looks_like_code_start(line_stripped):
+                in_code_section = True
+                code_lines.append(line)
+                continue
+            
+            # If we're in a code section, keep the line
+            if in_code_section or self._looks_like_code_line(line_stripped):
+                code_lines.append(line)
+                in_code_section = True
+            
+        return '\n'.join(code_lines).strip()
+    
+    def _looks_like_code_start(self, line: str) -> bool:
+        """Check if line looks like the start of a code section"""
+        line_lower = line.lower()
+        code_starters = [
+            'import ', 'from ', 'def ', 'class ', 'try:', 'if ', 'for ', 'while ',
+            '# import', '# define', '# load', '# create', '# apply'
+        ]
+        return any(line_lower.startswith(starter) for starter in code_starters)
+    
+    def _looks_like_code_line(self, line: str) -> bool:
+        """Check if a single line looks like code"""
+        if not line:
+            return False
+            
+        # Comments are code
+        if line.startswith('#'):
+            return True
+            
+        # Lines with assignments, function calls, etc.
+        code_patterns = [
+            r'=\s+',  # Assignments
+            r'\w+\(',  # Function calls
+            r'\w+\.\w+',  # Method calls
+            r'^\s*(if|for|while|try|except|with|def|class)\s',  # Control structures
+            r'print\s*\(',  # Print statements
+            r'plt\.',  # Matplotlib calls
+            r'np\.',   # NumPy calls
+        ]
+        
+        return any(re.search(pattern, line) for pattern in code_patterns)
+    
+    def _is_valid_python_code(self, code: str) -> bool:
+        """Check if the extracted text is valid Python code"""
+        if not code.strip():
+            return False
+        
+        # Add missing imports if we detect their usage
+        code = self._add_missing_imports(code)
+        
+        # Try to parse the code to check syntax
+        try:
+            compile(code, '<string>', 'exec')
+            return True
+        except SyntaxError:
+            # If there's a syntax error, try to fix common issues
+            fixed_code = self._fix_common_syntax_issues(code)
+            if fixed_code != code:
+                try:
+                    compile(fixed_code, '<string>', 'exec')
+                    return True
+                except SyntaxError:
+                    pass
+            return False
+        except Exception:
+            # Other compilation errors might still be valid code
+            return True
+    
+    def _add_missing_imports(self, code: str) -> str:
+        """Add commonly missing imports based on code content"""
+        imports_to_add = []
+        
+        # Check for astropy usage
+        if 'sigma_clip(' in code and 'from astropy.stats import' in code:
+            # Add sigma_clip to existing astropy.stats import
+            lines = code.split('\n')
+            for i, line in enumerate(lines):
+                if 'from astropy.stats import' in line and 'sigma_clip' not in line:
+                    if 'sigma_clipped_stats' in line:
+                        lines[i] = line.replace('sigma_clipped_stats', 'sigma_clipped_stats, sigma_clip')
+                    else:
+                        lines[i] = line + ', sigma_clip'
+                    break
+            code = '\n'.join(lines)
+        elif 'sigma_clip(' in code and 'from astropy.stats import' not in code:
+            imports_to_add.append('from astropy.stats import sigma_clip')
+        
+        # Check for other common missing imports
+        if 'plt.' in code and 'import matplotlib.pyplot' not in code:
+            imports_to_add.append('import matplotlib.pyplot as plt')
+        
+        if 'np.' in code and 'import numpy' not in code:
+            imports_to_add.append('import numpy as np')
+            
+        if imports_to_add:
+            return '\n'.join(imports_to_add) + '\n\n' + code
+        
+        return code
+    
+    def _fix_common_syntax_issues(self, code: str) -> str:
+        """Fix common syntax issues in extracted code"""
+        lines = code.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # Remove lines with obvious syntax errors that are artifacts
+            if 'IndentationError:' in line or 'SyntaxError:' in line:
+                continue
+            if line.strip().startswith('^^^^'):
+                continue
+            if 'File "<stdin>"' in line:
+                continue
+            
+            # Fix incomplete try-except blocks
+            if line.strip() == 'except Exception as e:' and not any('try:' in prev_line for prev_line in fixed_lines[-5:]):
+                continue
+                
+            fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
     
     async def _execute_code_in_process(self, code: str) -> str:
         """Execute code in the Python process and capture output"""
