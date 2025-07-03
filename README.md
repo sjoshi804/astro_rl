@@ -153,3 +153,8 @@ trajectory = {
 3. **Real Execution Feedback**: Ground truth rewards from actual code execution
 4. **Flexible Termination**: Supports both natural completion and bounded exploration
 5. **Trajectory-level Optimization**: GRPO trains on full conversation sequences
+
+## API Contract between code&exec service and ray execution of astro bench
+
+- start_instance(timeout_in_secs, num_cpus, num_gpus) -> return id
+- exec(id: str, code: str, success_criterion: func) -> { state: "running/crashed/completed/max_steps_exceeded", "execution_output": "str"}
