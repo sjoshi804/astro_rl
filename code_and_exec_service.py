@@ -17,19 +17,36 @@ import argparse
 import uuid
 from datetime import datetime
 
+# Import ray execution engine
+from ray_execution_engine import start_instance, exec, cleanup_instance, cleanup_all_instances
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global configuration variables (set via command line args)
 COMPLETION_SERVER_URL = None
-EXEC_ENGINE_URL = None
 MAX_TURNS = None
 TIMEOUT_SECONDS = None
 TRAJECTORY_OUTPUT_DIR = None
 TRAJECTORY_RUN_DIR: Optional[Path] = None  # created on first save
 
+# Ray execution engine configuration
+RAY_TIMEOUT_PER_STEP = 30.0
+RAY_NUM_CPUS = 1
+RAY_NUM_GPUS = 0
+
 app = FastAPI(title="Code Generation & Execution Service")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up Ray instances on service shutdown"""
+    logger.info("Shutting down service, cleaning up Ray instances...")
+    try:
+        cleanup_all_instances()
+        logger.info("Successfully cleaned up all Ray instances")
+    except Exception as e:
+        logger.error(f"Error during Ray cleanup: {e}")
 
 # Data Models
 class CodeGenerationRequest(BaseModel):
@@ -193,7 +210,7 @@ async def generate_single_trajectory(
     logger.info(f"Starting trajectory {trajectory_id} with prompt: {initial_prompt}")
     
     # Create a new execution instance for this trajectory
-    instance_id = await create_execution_instance()
+    instance_id = create_execution_instance()
     if not instance_id:
         logger.error(f"Failed to create execution instance for trajectory {trajectory_id}")
         return Trajectory(
@@ -262,7 +279,7 @@ async def generate_single_trajectory(
                     break
                 
                 # Step 2: Execute code in the persistent instance
-                execution_result = await execute_in_instance(instance_id, selected_code)
+                execution_result = execute_in_instance(instance_id, selected_code)
                 
                 # Step 3: Create turn record
                 turn = Turn(
@@ -310,10 +327,13 @@ async def generate_single_trajectory(
     finally:
         # Always attempt to cleanup the execution instance
         try:
-            await http_client.delete(f"{EXEC_ENGINE_URL}/instances/{instance_id}")
-            logger.info(f"Cleaned up execution instance {instance_id}")
+            cleanup_success = cleanup_instance(instance_id)
+            if cleanup_success:
+                logger.info(f"Cleaned up Ray execution instance {instance_id}")
+            else:
+                logger.warning(f"Failed to cleanup Ray execution instance {instance_id}")
         except Exception as e:
-            logger.warning(f"Failed to cleanup execution instance {instance_id}: {e}")
+            logger.warning(f"Failed to cleanup Ray execution instance {instance_id}: {e}")
     
     # Determine termination reason based on execution engine state
     termination_reason = "generation_error"
@@ -400,45 +420,44 @@ async def call_completion_server(prompt: str, num_completions: int = 4) -> List[
         logger.error(f"Completion server error: {e}")
         return []
 
-async def create_execution_instance() -> Optional[str]:
-    """Create a new execution instance"""
+def create_execution_instance() -> Optional[str]:
+    """Create a new execution instance using Ray"""
     try:
-        response = await http_client.post(f"{EXEC_ENGINE_URL}/start_execution", json={})
-        response.raise_for_status()
-        result = response.json()
-        return result.get("instance_id")
+        instance_id = start_instance(
+            timeout_in_secs=RAY_TIMEOUT_PER_STEP,
+            num_cpus=RAY_NUM_CPUS,
+            num_gpus=RAY_NUM_GPUS
+        )
+        logger.info(f"Created Ray execution instance: {instance_id}")
+        return instance_id
     except Exception as e:
-        logger.error(f"Failed to create execution instance: {e}")
+        logger.error(f"Failed to create Ray execution instance: {e}")
         return None
 
-async def execute_in_instance(instance_id: str, text: str) -> Dict[str, Any]:
-    """Execute code in a specific execution instance"""
+def execute_in_instance(instance_id: str, text: str) -> Dict[str, Any]:
+    """Execute code in a specific Ray execution instance"""
     try:
-        response = await http_client.post(
-            f"{EXEC_ENGINE_URL}/execute",
-            json={
-                "instance_id": instance_id,
-                "text": text
-            }
-        )
-        response.raise_for_status()
-        result = response.json()
+        # Execute code using Ray execution engine
+        result = exec(instance_id, text, success_criterion=None)
         
-        # Convert execution engine response to our expected format
+        # Convert Ray execution engine response to our expected format
+        state = result.get("state", "unknown")
+        execution_output = result.get("execution_output", "")
+        
         return {
-            "output": result.get("output", ""),
-            "success": result.get("state") not in ["crash", "max_steps_exceeded"],
-            "state": result.get("state", "unknown"),
-            "step_count": result.get("step_count", 0),
-            "completed": result.get("state") == "success",
-            "should_continue": result.get("state") == "running"
+            "output": execution_output,
+            "success": state == "completed",
+            "state": state,
+            "step_count": 0,  # Ray engine doesn't track step count this way
+            "completed": state == "completed",
+            "should_continue": state not in ["crashed", "max_steps_exceeded"]
         }
     except Exception as e:
-        logger.error(f"Execution engine error: {e}")
+        logger.error(f"Ray execution engine error: {e}")
         return {
             "output": f"Execution failed: {str(e)}",
             "success": False,
-            "state": "crash",
+            "state": "crashed",
             "step_count": 0,
             "completed": False,
             "should_continue": False
@@ -461,7 +480,10 @@ async def get_stats():
     return {
         "active_trajectories": len(active_trajectories),
         "completion_server": COMPLETION_SERVER_URL,
-        "execution_engine": EXEC_ENGINE_URL,
+        "ray_execution_engine": "embedded",
+        "ray_timeout_per_step": RAY_TIMEOUT_PER_STEP,
+        "ray_num_cpus": RAY_NUM_CPUS,
+        "ray_num_gpus": RAY_NUM_GPUS,
         "trajectory_output_dir": TRAJECTORY_OUTPUT_DIR,
         "saved_trajectories": trajectory_count
     }
@@ -475,7 +497,9 @@ async def get_config():
         "max_turns": MAX_TURNS,
         "timeout_seconds": TIMEOUT_SECONDS,
         "completion_server_url": COMPLETION_SERVER_URL,
-        "exec_engine_url": EXEC_ENGINE_URL,
+        "ray_timeout_per_step": RAY_TIMEOUT_PER_STEP,
+        "ray_num_cpus": RAY_NUM_CPUS,
+        "ray_num_gpus": RAY_NUM_GPUS,
         "trajectory_output_dir": TRAJECTORY_OUTPUT_DIR
     }
 
@@ -484,12 +508,16 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Code Generation & Execution Service")
     parser.add_argument("--completion-server-url", default="http://localhost:8000",
                        help="URL of the completion server (VLLM)")
-    parser.add_argument("--exec-engine-url", default="http://localhost:8001", 
-                       help="URL of the execution engine")
     parser.add_argument("--max-turns", type=int, default=10,
                        help="Maximum number of turns per trajectory")
     parser.add_argument("--timeout", type=int, default=30,
                        help="HTTP timeout in seconds")
+    parser.add_argument("--ray-timeout-per-step", type=float, default=30.0,
+                       help="Timeout per execution step in Ray engine")
+    parser.add_argument("--ray-num-cpus", type=int, default=1,
+                       help="Number of CPUs per Ray actor")
+    parser.add_argument("--ray-num-gpus", type=int, default=0,
+                       help="Number of GPUs per Ray actor")
     parser.add_argument("--trajectory-output-dir", default="/work/10450/sjoshi804/vista/astro_rl/trajectories",
                        help="Directory to save trajectory JSON files")
     parser.add_argument("--host", default="0.0.0.0",
@@ -503,14 +531,19 @@ if __name__ == "__main__":
     
     # Set global configuration
     COMPLETION_SERVER_URL = args.completion_server_url
-    EXEC_ENGINE_URL = args.exec_engine_url
     MAX_TURNS = args.max_turns
     TIMEOUT_SECONDS = args.timeout
+    RAY_TIMEOUT_PER_STEP = args.ray_timeout_per_step
+    RAY_NUM_CPUS = args.ray_num_cpus
+    RAY_NUM_GPUS = args.ray_num_gpus
     TRAJECTORY_OUTPUT_DIR = args.trajectory_output_dir
     
-    logger.info(f"Starting Code Generation & Execution Service")
+    logger.info(f"Starting Code Generation & Execution Service with Ray")
     logger.info(f"Completion Server: {COMPLETION_SERVER_URL}")
-    logger.info(f"Execution Engine: {EXEC_ENGINE_URL}")
+    logger.info(f"Ray Execution Engine: Embedded")
+    logger.info(f"Ray Timeout per Step: {RAY_TIMEOUT_PER_STEP}s")
+    logger.info(f"Ray CPUs per Actor: {RAY_NUM_CPUS}")
+    logger.info(f"Ray GPUs per Actor: {RAY_NUM_GPUS}")
     logger.info(f"Max Turns: {MAX_TURNS}")
     logger.info(f"Timeout: {TIMEOUT_SECONDS}s")
     logger.info(f"Trajectory Output Directory: {TRAJECTORY_OUTPUT_DIR}")
@@ -562,29 +595,20 @@ EXPECTED API CONTRACTS FOR EXTERNAL SERVICES:
        "success": bool
    }
 
-2. EXECUTION ENGINE at http://localhost:8001
-   POST /start_execution
-   Request: {}
-   Response: {
-       "instance_id": str
+2. RAY EXECUTION ENGINE (Embedded)
+   Direct function calls to ray_execution_engine module:
+   
+   start_instance(timeout_in_secs, num_cpus, num_gpus) -> str
+   Returns: instance_id
+   
+   exec(instance_id, code, success_criterion) -> Dict[str, Any]
+   Returns: {
+       "state": str,           # "completed", "crashed", "max_steps_exceeded"
+       "execution_output": str # execution output or error message
    }
    
-   POST /execute
-   Request: {
-       "instance_id": str,
-       "text": str
-   }
-   Response: {
-       "output": str,         # execution output or error message
-       "state": str,          # "running", "success", "crash", "max_steps_exceeded"
-       "step_count": int      # number of steps executed in this instance
-   }
-   
-   DELETE /instances/{instance_id}
-   Response: {
-       "status": "cleaned_up",
-       "instance_id": str
-   }
+   cleanup_instance(instance_id) -> bool
+   Returns: success status of cleanup
 
 USAGE BY POLICY TRAINING MODULE:
 POST /generate_trajectories

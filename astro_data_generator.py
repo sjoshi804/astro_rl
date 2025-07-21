@@ -16,29 +16,17 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Astronomy data visualization tasks for FITS files
-ASTRONOMY_TASKS = [
-    "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",
-    
-#    "Create a simple grayscale visualization of the UV image with proper axis labels and a colorbar",
-    
-#    "Generate a histogram of pixel intensity values to understand the brightness distribution in the UV image"
-    
-#     "Apply different color maps (viridis, plasma, hot) to the image and display them side by side for comparison",
-    
-#     "Find and highlight the brightest regions in the image by creating a binary mask for pixels above the 95th percentile",
-    
-#     "Calculate and display basic statistics (mean, median, standard deviation) of pixel values in different regions of the image",
-    
-#     "Create a contour plot overlay on the original image to show intensity levels and structure",
-    
-#     "Implement a simple background subtraction by subtracting the median value and show before/after images",
-    
-#     "Create a radial profile plot showing how brightness varies with distance from the image center",
-    
-#     "Generate a 3D surface plot of a central region (e.g., 100x100 pixels) to visualize the intensity landscape"
-# 
-]
+# Import demo tasks from organized demo_data
+try:
+    from demo_data.simple_multistep_tasks import ALL_DEMO_TASKS, get_tasks_by_category, get_simple_tasks
+    from demo_data.demo_config import get_demo_config, list_available_configs
+    DEMO_TASKS_AVAILABLE = True
+except ImportError:
+    # Fallback to original astronomy tasks if demo_data not available
+    ASTRONOMY_TASKS = [
+        "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",
+    ]
+    DEMO_TASKS_AVAILABLE = False
 
 class AstronomyDataGenerator:
     """Generates astronomy data visualization tasks for the Code Generation & Execution Service"""
@@ -50,9 +38,24 @@ class AstronomyDataGenerator:
         self.results = []
         self.start_time = None
         
-    def _format_task_with_context(self, task: str) -> str:
-        """Format task with FITS file context and common imports"""
-        context = f"""
+    def _format_task_with_context(self, task, task_info=None) -> str:
+        """Format task with context and imports"""
+        # Handle both string tasks and task dictionaries
+        if isinstance(task, dict):
+            task_prompt = task.get("prompt", task.get("name", str(task)))
+            task_info = task
+        else:
+            task_prompt = task
+        
+        # Check if this is an astronomy task
+        is_astronomy_task = (
+            "fits" in task_prompt.lower() or 
+            "astronomy" in task_prompt.lower() or
+            (task_info and "astronomy" in task_info.get("name", "").lower())
+        )
+        
+        if is_astronomy_task:
+            context = f"""
 You are working with an astronomy FITS file located at: {self.fits_file_path}
 
 This is an Astro1 Ultraviolet Imaging Telescope image with dimensions 512 x 512 pixels.
@@ -64,7 +67,7 @@ Common imports you might need:
 - from astropy.visualization import ZScaleInterval, ImageNormalize
 - from astropy.stats import sigma_clipped_stats
 
-Task: {task}
+Task: {task_prompt}
 
 Generate Python code to accomplish this task. Make sure to:
 1. Handle the FITS file properly
@@ -72,6 +75,18 @@ Generate Python code to accomplish this task. Make sure to:
 3. Create clear, labeled visualizations when applicable
 4. Add informative print statements for any calculated values
 """
+        else:
+            context = f"""
+Task: {task_prompt}
+
+Generate Python code to accomplish this task. Make sure to:
+1. Include appropriate imports
+2. Add proper error handling
+3. Include informative print statements
+4. Create clear outputs when applicable
+5. Test your implementation
+"""
+        
         return context.strip()
     
     async def test_service_health(self) -> bool:
@@ -105,12 +120,23 @@ Generate Python code to accomplish this task. Make sure to:
             logger.warning(f"Failed to get service config: {e}")
             return {}
     
-    async def generate_single_task(self, task: str, max_turns: int = 8) -> Dict[str, Any]:
-        """Generate code for a single astronomy task"""
+    async def generate_single_task(self, task, max_turns: int = 8) -> Dict[str, Any]:
+        """Generate a single task - accepts string or task dict"""
         test_start = time.time()
-        formatted_task = self._format_task_with_context(task)
         
-        logger.info(f"Generating code for: {task[:60]}...")
+        # Handle both string tasks and task dictionaries
+        if isinstance(task, dict):
+            task_name = task.get("name", "unknown_task")
+            task_prompt = task.get("prompt", task.get("name", str(task)))
+            completion_criteria = task.get("completion_criteria", "task complete")
+        else:
+            task_name = task
+            task_prompt = task
+            completion_criteria = "visualization complete"
+        
+        formatted_task = self._format_task_with_context(task_prompt, task if isinstance(task, dict) else None)
+        
+        logger.info(f"Generating code for: {task_name}")
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -119,7 +145,7 @@ Generate Python code to accomplish this task. Make sure to:
                         {
                             "initial_prompts": [formatted_task],
                             "max_turns": max_turns,
-                            "completion_criteria": "visualization complete"
+                            "completion_criteria": completion_criteria
                         }
                     ]
                 }
@@ -136,7 +162,8 @@ Generate Python code to accomplish this task. Make sure to:
                     trajectory = trajectories[0] if trajectories else None
                     
                     result = {
-                        "task": task,
+                        "task": task_name,
+                        "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                         "formatted_prompt": formatted_task,
                         "success": True,
                         "duration_seconds": test_duration,
@@ -163,7 +190,8 @@ Generate Python code to accomplish this task. Make sure to:
                 else:
                     logger.error(f"✗ Request failed: {response.status_code} - {response.text}")
                     return {
-                        "task": task,
+                        "task": task_name,
+                        "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                         "formatted_prompt": formatted_task,
                         "success": False,
                         "duration_seconds": test_duration,
@@ -174,7 +202,8 @@ Generate Python code to accomplish this task. Make sure to:
         except asyncio.TimeoutError:
             logger.error(f"✗ Request timed out after {self.timeout}s")
             return {
-                "task": task,
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                 "formatted_prompt": formatted_task,
                 "success": False,
                 "duration_seconds": self.timeout,
@@ -185,7 +214,8 @@ Generate Python code to accomplish this task. Make sure to:
             test_duration = time.time() - test_start
             logger.error(f"✗ Request failed: {e}")
             return {
-                "task": task,
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                 "formatted_prompt": formatted_task,
                 "success": False,
                 "duration_seconds": test_duration,
@@ -419,7 +449,11 @@ async def main():
     parser.add_argument("--concurrency", type=int, default=2,
                        help="Number of concurrent requests (if --concurrent)")
     parser.add_argument("--tasks", nargs="*",
-                       help="Custom tasks to process (overrides default astronomy tasks)")
+                       help="Custom task names to process (overrides defaults)")
+    parser.add_argument("--config", 
+                       help="Demo configuration to use (quick, standard, comprehensive, etc.)")
+    parser.add_argument("--category",
+                       help="Task category (programming, astronomy, math_science, interactive)")
     parser.add_argument("--output-file",
                        help="File to save results (default: auto-generated)")
     parser.add_argument("--save-code", action="store_true",
@@ -429,8 +463,37 @@ async def main():
     
     args = parser.parse_args()
     
-    # Use custom tasks or default astronomy dataset
-    tasks = args.tasks if args.tasks else ASTRONOMY_TASKS
+    # Determine which tasks to run
+    if args.config and DEMO_TASKS_AVAILABLE:
+        # Use demo configuration
+        demo_config = get_demo_config(args.config)
+        task_names = demo_config["tasks"]
+        tasks = [task for task in ALL_DEMO_TASKS if task["name"] in task_names]
+        args.max_turns = demo_config["max_turns"]
+        args.timeout = demo_config["timeout_seconds"]
+        if demo_config.get("concurrent"):
+            args.concurrent = True
+            args.concurrency = demo_config.get("concurrency", 2)
+        logger.info(f"Using demo config '{args.config}' with {len(tasks)} tasks")
+    elif args.category and DEMO_TASKS_AVAILABLE:
+        # Use task category
+        tasks = get_tasks_by_category(args.category)
+        logger.info(f"Using {len(tasks)} tasks from category '{args.category}'")
+    elif args.tasks and DEMO_TASKS_AVAILABLE:
+        # Use specific task names
+        tasks = [task for task in ALL_DEMO_TASKS if task["name"] in args.tasks]
+        if not tasks:
+            # Fallback to treating as string prompts
+            tasks = args.tasks
+        logger.info(f"Using {len(tasks)} specified tasks")
+    elif DEMO_TASKS_AVAILABLE:
+        # Default to simple demo tasks
+        tasks = get_simple_tasks()
+        logger.info("Using simple demo tasks from demo_data/")
+    else:
+        # Fallback to original astronomy tasks or string prompts
+        tasks = args.tasks if args.tasks else ASTRONOMY_TASKS
+        logger.info(f"Using fallback tasks: {len(tasks)} items")
     
     logger.info(f"Starting astronomy data generation with {len(tasks)} tasks")
     logger.info(f"Service URL: {args.service_url}")

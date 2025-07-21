@@ -24,7 +24,7 @@
 ### 1. Interactive Code Generation & Evaluation Service
 **Components:**
 - **Completion Server** (VLLM serving latest model weights)
-- **Code Execution Engine** (sandboxed runtime environment)
+- **Ray Execution Engine** (distributed Ray-based runtime environment)
 
 ### 2. Policy Training Module
 **Component:**
