@@ -1,149 +1,183 @@
-# Demo Data for Astro RL
+# Demo Data Organization
 
-This directory contains organized demo input data and configurations for testing the multi-turn code generation and execution system.
+This directory contains organized demo input data and configurations for the Astro RL system.
 
-## Directory Structure
+## Structure
 
 ```
 demo_data/
-├── README.md                          # This file
-├── astro1_uv_imaging_telescope.fits   # Astronomy FITS file for demo
-├── simple_multistep_tasks.py          # Multi-step task definitions
-├── demo_config.py                     # Configuration settings
-├── demo_runner.py                     # Main demo execution script
-└── sample_outputs/                    # Example outputs (created after runs)
+├── astro1_uv_imaging_telescope.fits    # FITS file for astronomy tasks
+├── simple_multistep_tasks.py           # Multi-step task definitions  
+├── demo_config.py                      # Demo configurations
+├── success_criteria.py                 # Success criterion functions
+└── README.md                           # This file
 ```
 
-## Demo Tasks Categories
+## New Function-Based Completion Criteria
 
-### 1. Programming Tasks
-- **Fibonacci Sequence**: Basic recursion → testing → optimization with memoization
-- **Data Analysis Pipeline**: Generate data → calculate stats → create visualization
-- **File Processing**: Create CSV → read CSV → filter data
-- **Web Data Fetch**: HTTP request → parse JSON → save results
+The system now uses **programmatic success criterion functions** instead of text parsing for determining task completion. This provides:
 
-### 2. Math/Science Tasks  
-- **Physics Projectile**: Calculate trajectory → plot path → find maximum height
-- **Statistics Experiment**: Generate datasets → run t-test → visualize results
+- **Robust validation**: Functions check actual variables and execution state
+- **Precise control**: Can verify specific conditions are met  
+- **Multi-step enforcement**: Won't complete early on generic "success" messages
+- **Extensible design**: Easy to add new custom criteria
 
-### 3. Astronomy Tasks
-- **FITS Basic Analysis**: Load FITS file → display info → create grayscale plot
-- **FITS Advanced Analysis**: Load FITS → calculate statistics → create histogram
+### How It Works
 
-### 4. Interactive Tasks
-- **Number Guessing Game**: Setup game → simulate guesses → track results
-- **Text Adventure**: Create structure → add rooms → implement commands → test navigation
+1. **Function Definition**: Each task has an associated success criterion function in `success_criteria.py`
+2. **Execution**: The Ray executor runs the main code, then calls the success function
+3. **Context Checking**: Success functions receive the execution context (`locals_dict`) to examine variables
+4. **Boolean Result**: Function returns `True` if task objectives met, `False` otherwise
+
+### Example Success Criterion
+```python
+def fibonacci_success_criterion(locals_dict: Dict[str, Any]) -> bool:
+    """Check if fibonacci functions are defined and working"""
+    if 'fibonacci' not in locals_dict or 'fibonacci_memo' not in locals_dict:
+        return False
+    
+    # Test both functions
+    fib_func = locals_dict['fibonacci']
+    fib_memo_func = locals_dict['fibonacci_memo']
+    
+    return fib_func(5) == 5 and fib_memo_func(5) == 5
+```
 
 ## Demo Configurations
 
-### Quick Demo (`quick`)
-- **Tasks**: 2 simple tasks (fibonacci, data analysis)
-- **Duration**: ~2-3 minutes
-- **Purpose**: Fast verification that system works
+Choose from these pre-configured demo types:
 
-### Standard Demo (`standard`)
-- **Tasks**: 4 balanced tasks across categories
-- **Duration**: ~5-8 minutes  
-- **Purpose**: Show multi-step capabilities and variety
+| Config | Tasks | Duration | Description |
+|--------|-------|----------|-------------|
+| `quick` | 2 tasks | ~3 min | Fast demo: fibonacci + data analysis |
+| `standard` | 4 tasks | ~8 min | Balanced: programming + astronomy |
+| `comprehensive` | 8 tasks | ~15 min | Full demo: all categories |
+| `astronomy_focused` | 2 tasks | ~10 min | FITS analysis only |
+| `programming_focused` | 4 tasks | ~10 min | Coding challenges only |
+| `output_tests` | 5 tasks | ~5 min | Output capture verification tests |
+| `multiturn_tests` | 4 tasks | ~8 min | Multi-turn interaction testing |
 
-### Comprehensive Demo (`comprehensive`)
-- **Tasks**: 8 tasks covering all categories
-- **Duration**: ~10-15 minutes
-- **Purpose**: Full system demonstration
+## Task Categories
 
-### Specialized Demos
-- **Astronomy Focused**: FITS file analysis tasks
-- **Programming Focused**: Code development tasks
+### Programming Tasks
+- **fibonacci_sequence**: Recursive → optimized with memoization
+- **data_analysis_pipeline**: Generate data → stats → visualization  
+- **file_processing**: Write CSV → read → filter data
+- **web_data_fetch**: HTTP request → parse → save
 
-## Key Features Demonstrated
+### Math/Science Tasks  
+- **physics_projectile**: Calculate trajectory → plot → find max height
+- **statistics_experiment**: Generate datasets → t-test → visualize
 
-### Multi-Step Execution
-Each task requires 2-4 steps to complete, with the model needing to:
-1. **Plan** the approach
-2. **Implement** initial code
-3. **Debug** based on execution feedback  
-4. **Refine** or extend functionality
+### Astronomy Tasks
+- **fits_basic_analysis**: Load FITS → info → grayscale plot
+- **fits_advanced_analysis**: Load FITS → stats → histogram
 
-### Environment Feedback Loop
-Tasks are designed so the model must:
-- Check if data loaded correctly
-- Verify calculations/outputs
-- Handle errors and retry
-- Build upon previous steps
+### Interactive Tasks
+- **number_guessing_game**: Setup → simulate → track results
+- **text_adventure**: Rooms → commands → navigation
 
-### Completion Criteria
-Each task has specific completion criteria that require:
-- Successful code execution
-- Specific outputs (plots, files, calculations)
-- Verification steps
-- Error handling
+### Output Test Tasks
+- **output_test_basic**: Explicit stdout generation with print statements
+- **output_test_calculations**: Verbose stdout with step-by-step calculations
+- **output_test_loops**: Continuous stdout output during loop execution
+- **output_test_stderr**: Explicit stderr/stdout separation using sys.stderr
+- **output_test_multiline**: Multi-line stdout output with ASCII art
+
+### Multi-Turn Test Tasks
+- **multiturn_iterative_optimization**: Progressive algorithm development and optimization
+- **multiturn_data_exploration**: Sequential data analysis building on previous results  
+- **multiturn_debugging_journey**: Step-by-step debugging and enhancement process
+- **multiturn_progressive_features**: Incremental feature building across multiple turns
+- **multiturn_adaptive_analysis**: Analysis that adapts based on execution feedback
+- **multiturn_error_recovery**: Learning error handling through trial and iteration
+
+## Multi-Step Design
+
+Each task is designed to require **2-4 steps with environment feedback**:
+
+1. **Initial Setup**: Basic implementation
+2. **Testing/Analysis**: Verify functionality 
+3. **Enhancement/Visualization**: Add features or visualize
+4. **Completion Verification**: Programmatic success check
+
+The new success criterion functions ensure multi-step execution by only returning `True` when specific objectives are actually achieved, not just when code runs without errors.
+
+## Success Criteria Types
+
+### Real Validation Functions
+- **fibonacci_sequence**: Checks both functions exist and return correct value
+- **data_analysis_pipeline**: Verifies 100 data points and statistics calculated
+- **file_processing**: Confirms filtered data exists
+- **fits_basic_analysis**: Validates FITS data loaded with correct shape
+
+### Random Functions (for demo)
+- **50/50 random**: `random_success_criterion_50_50`
+- **70% success**: `random_success_criterion_70_30` 
+- **Progress-based**: `random_success_criterion_step_based` (more variables = higher success rate)
+- **Always true/false**: For testing
 
 ## Usage
 
-### Quick Start
+### With SLURM Script
 ```bash
-cd /path/to/astro_rl
-python demo_data/demo_runner.py --config quick
+# Edit run_demo.slurm and change:
+export DEMO_CONFIG="standard"  # or "quick", "comprehensive", etc.
+sbatch run_demo.slurm
 ```
 
-### Run Specific Configuration
+### Direct Usage
 ```bash
-python demo_data/demo_runner.py --config standard --save-code
+# Quick demo
+python astro_data_generator.py --config quick --fits-file demo_data/astro1_uv_imaging_telescope.fits
+
+# Category-specific
+python astro_data_generator.py --category programming --fits-file demo_data/astro1_uv_imaging_telescope.fits
+
+# Specific tasks
+python astro_data_generator.py --tasks fibonacci_sequence fits_basic_analysis --fits-file demo_data/astro1_uv_imaging_telescope.fits
 ```
 
-### Custom Tasks
-```bash
-python demo_data/demo_runner.py --tasks fibonacci_sequence file_processing
+## Output Organization
+
+All outputs now go into timestamped run directories:
+
+```
+trajectories/
+├── run_20250720_202930/
+│   ├── demo_results_standard_294506.json    # Main results
+│   ├── astronomy_code_snippets_*.py         # Generated code
+│   └── trajectory_*.json                    # Individual trajectories
+└── run_20250720_201208/
+    └── ...
 ```
 
-### With Custom Service URLs
+The trajectory files now include `success_criterion_met: true/false` fields showing when the programmatic validation succeeded.
+
+## Output Capture Testing
+
+New output test tasks verify that the pipeline correctly captures stdout/stderr:
+
+### Quick Output Test
 ```bash
-export CODE_EXEC_SERVICE_URL="http://your-service:8002"
-python demo_data/demo_runner.py --config comprehensive
+# Run output capture verification tests
+python astro_data_generator.py --config output_tests --fits-file demo_data/astro1_uv_imaging_telescope.fits
+
+# Or run the dedicated test runner
+python demo_data/run_output_tests.py --service-url http://localhost:8002
 ```
 
-## Integration with Main System
+### Output Test Types
+1. **Basic Output**: Explicit stdout generation with print() statements
+2. **Calculations**: Verbose stdout with detailed step-by-step output  
+3. **Loops**: Continuous stdout during loop execution
+4. **STDERR/STDOUT**: Explicit stderr/stdout separation using sys.stderr
+5. **Multi-line**: Complex multi-line stdout with ASCII patterns
 
-These demo tasks integrate with:
+### Expected Output Examples
+Each test has corresponding verification examples in `output_verification_examples.py`:
+- Reference implementations showing expected output
+- Verification functions to check captured vs expected
+- Automated validation of output capture correctness
 
-- **`code_and_exec_service.py`**: Multi-turn code generation and execution
-- **`ray_execution_engine.py`**: Persistent execution environment
-- **`completion_server.py`**: LLM-based code completion
-- **`astro_data_generator.py`**: Task execution and result analysis
-
-## Expected Outcomes
-
-### Learning Behaviors
-The RL system should learn to:
-- **Plan ahead**: Break complex tasks into steps
-- **Debug iteratively**: Use execution feedback to fix errors
-- **Build incrementally**: Extend working code rather than rewriting
-- **Handle persistence**: Use variables and state across turns
-
-### Success Metrics
-- **Completion rate**: Percentage of tasks completed successfully
-- **Step efficiency**: Average steps needed per task
-- **Error recovery**: Ability to fix errors and continue
-- **Code quality**: Correctness and style of generated code
-
-## Troubleshooting
-
-### FITS File Not Found
-If astronomy tasks fail, check that `astro1_uv_imaging_telescope.fits` is in this directory.
-
-### Service Connection Errors
-Ensure all services are running:
-```bash
-# Check service health
-curl http://localhost:8002/health
-curl http://localhost:8000/health
-```
-
-### Ray Execution Issues
-Clear Ray processes if needed:
-```bash
-ray stop --force
-```
-
-### Task Completion Issues
-Check completion criteria in task definitions - they may need adjustment based on your model's output patterns. 
+This keeps each demo run's outputs cleanly organized and prevents file conflicts. 

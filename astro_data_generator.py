@@ -104,6 +104,10 @@ Generate Python code to accomplish this task. Make sure to:
             logger.error(f"✗ Failed to connect to service: {e}")
             return False
     
+    def _is_service_available(self) -> bool:
+        """Check if service was verified as available during initialization"""
+        return hasattr(self, '_service_verified') and self._service_verified
+    
     async def get_service_config(self) -> Dict[str, Any]:
         """Get service configuration"""
         try:
@@ -137,6 +141,19 @@ Generate Python code to accomplish this task. Make sure to:
         formatted_task = self._format_task_with_context(task_prompt, task if isinstance(task, dict) else None)
         
         logger.info(f"Generating code for: {task_name}")
+        
+        # Check if service is available before attempting generation
+        if not self._is_service_available():
+            logger.error(f"✗ Service not available - cannot generate task: {task_name}")
+            return {
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
+                "formatted_prompt": formatted_task,
+                "success": False,
+                "duration_seconds": time.time() - test_start,
+                "trajectory": None,
+                "error": "Code execution service is not available"
+            }
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -377,6 +394,17 @@ Generate Python code to accomplish this task. Make sure to:
     
     def save_results(self, analysis: Dict[str, Any], filename: str = None, trajectory_dir: str = None):
         """Save results to JSON file"""
+        
+        # Don't save results if service was never available
+        if not self._is_service_available():
+            logger.warning("Service was not available - skipping results save to prevent fake successful trajectories")
+            return
+        
+        # Don't save if no successful results
+        if analysis.get("successful_tasks", 0) == 0:
+            logger.warning("No successful tasks - skipping results save")
+            return
+        
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"astronomy_generation_results_{timestamp}.json"
@@ -397,6 +425,18 @@ Generate Python code to accomplish this task. Make sure to:
     
     def extract_final_code_snippets(self, results: List[Dict[str, Any]], output_file: str = None, trajectory_dir: str = None):
         """Extract and save final working code snippets"""
+        
+        # Don't save code snippets if service was never available
+        if not self._is_service_available():
+            logger.warning("Service was not available - skipping code snippets save")
+            return
+        
+        # Check if there are any successful results
+        successful_results = [r for r in results if r.get("success", False) and r.get("trajectory")]
+        if not successful_results:
+            logger.warning("No successful results with code - skipping code snippets save")
+            return
+        
         if output_file is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = f"astronomy_code_snippets_{timestamp}.py"
@@ -509,6 +549,9 @@ async def main():
         logger.error("Service health check failed. Exiting.")
         return
     
+    # Mark service as verified and available
+    generator._service_verified = True
+    
     # Get service config
     config = await generator.get_service_config()
     
@@ -543,7 +586,7 @@ async def main():
     
     generator.print_summary(analysis)
     
-    # Save results to trajectory directory
+    # Save results to trajectory directory (will be put in run-specific subdirectory)
     generator.save_results(analysis, args.output_file, args.trajectory_dir)
     
     # Save working code snippets if requested, to trajectory directory

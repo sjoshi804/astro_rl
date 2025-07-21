@@ -75,6 +75,28 @@ DEMO_CONFIGS = {
         "concurrency": 2,
         "tasks": ["fibonacci_sequence", "file_processing", "number_guessing_game", "text_adventure"],
         "completion_criteria": "programming objectives met"
+    },
+    
+    "output_tests": {
+        "name": "Output Capture Tests",
+        "description": "Tests specifically designed to verify output capture works correctly",
+        "max_turns": 5,
+        "timeout_seconds": 60,
+        "concurrent": True,
+        "concurrency": 2,
+        "tasks": ["output_test_basic", "output_test_calculations", "output_test_loops", "output_test_stderr", "output_test_multiline"],
+        "completion_criteria": "output tests complete"
+    },
+    
+    "multiturn_tests": {
+        "name": "Multi-Turn Pipeline Tests",
+        "description": "Tests specifically designed to verify multi-turn interaction functionality",
+        "max_turns": 6,
+        "timeout_seconds": 120,
+        "concurrent": True,
+        "concurrency": 2,
+        "tasks": ["multiturn_iterative_optimization", "multiturn_data_exploration", "multiturn_debugging_journey", "multiturn_progressive_features"],
+        "completion_criteria": "multi-turn functionality verified"
     }
 }
 

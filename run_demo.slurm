@@ -24,6 +24,8 @@
 # - "comprehensive"      : Full 8-task demo (~15 min) - all categories
 # - "astronomy_focused"  : FITS analysis tasks (~10 min) - astronomy only
 # - "programming_focused": Programming tasks (~10 min) - coding challenges
+# - "output_tests"       : Output capture tests (~5 min) - verify stdout/stderr capture
+# - "multiturn_tests"    : Multi-turn interaction tests (~8 min) - verify multi-step functionality
 #
 # Simply change DEMO_CONFIG="standard" to your desired configuration below!
 ###################
@@ -69,8 +71,8 @@ export CONDA_ENV="astro_rl"
 # =============================================================================
 # DEMO CONFIGURATION - CHANGE THIS TO SELECT DEMO TYPE
 # =============================================================================
-# Available configs: quick, standard, comprehensive, astronomy_focused, programming_focused
-export DEMO_CONFIG="standard"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
+# Available configs: quick, standard, comprehensive, astronomy_focused, programming_focused, output_tests, multiturn_tests
+export DEMO_CONFIG="output_tests"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
 
 # Data Generation Configuration
 export TRAJECTORY_OUTPUT_DIR="./trajectories"
@@ -343,7 +345,12 @@ CODE_EXEC_PID=$!
 
 # Wait for service to be ready
 sleep 20
-wait_for_service "$CODE_EXEC_SERVICE_URL" "Code Generation & Execution Service" || exit 1
+if ! wait_for_service "$CODE_EXEC_SERVICE_URL" "Code Generation & Execution Service"; then
+    echo "✗ CRITICAL: Code Generation & Execution Service failed to start!"
+    echo "✗ Cannot proceed with data generation - all trajectories would be fake failures."
+    echo "✗ Check logs/${SLURM_JOB_ID}/code_exec_service.err for details."
+    exit 1
+fi
 
 echo "✓ Code Generation & Execution Service is ready!"
 

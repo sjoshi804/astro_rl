@@ -6,7 +6,7 @@ Shows how to use the ray_execution_engine for code execution
 
 import time
 import json
-from ray_execution_engine import start_instance, exec, cleanup_instance, cleanup_all_instances
+from ray_execution_engine import start_instance, execute_code, cleanup_instance, cleanup_all_instances
 
 def main():
     print("=== Ray Execution Engine Demo ===")
@@ -65,7 +65,7 @@ def main():
         print(f"   Code: {test_case['code']}")
         
         try:
-            result = exec(instance_id, test_case['code'])
+            result = execute_code(instance_id, test_case['code'])
             
             print(f"   State: {result['state']}")
             print(f"   Output: {result['execution_output']}")
@@ -115,14 +115,14 @@ def test_multiple_instances():
     for i, instance_id in enumerate(instances):
         code = f"instance_number = {i+1}\nprint(f'This is instance {{instance_number}}')"
         print(f"Executing in instance {i+1}: {instance_id}")
-        result = exec(instance_id, code)
+        result = execute_code(instance_id, code)
         print(f"Result: {result['execution_output']}")
         print()
     
     # Verify isolation - each instance should have its own variables
     for i, instance_id in enumerate(instances):
         code = "print(f'Instance {instance_number} still remembers its number')"
-        result = exec(instance_id, code)
+        result = execute_code(instance_id, code)
         print(f"Instance {i+1} memory test: {result['execution_output']}")
     
     # Cleanup all instances

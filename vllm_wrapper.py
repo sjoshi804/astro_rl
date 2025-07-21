@@ -35,10 +35,14 @@ from pydantic import BaseModel
 
 class GenerateRequest(BaseModel):
     prompt: Union[str, List[str]]
-    max_tokens: int = 100
-    temperature: float = 0.7
+    max_tokens: int = 512  # Match completion server default
+    temperature: float = 0.8  # Match completion server default
     top_p: float = 1.0
     top_k: int = -1
+    frequency_penalty: float = 0.0  # Add missing parameter
+    presence_penalty: float = 0.0   # Add missing parameter
+    stop: Optional[List[str]] = None  # Add missing parameter
+    n: int = 1  # Add missing parameter
     logprobs: Optional[int] = None
 
 
@@ -174,18 +178,31 @@ async def generate(request: GenerateRequest):
     if not vllm_manager:
         raise HTTPException(status_code=500, detail="VLLM not initialized")
     
+    # Validate request prompt
+    if not request.prompt or (isinstance(request.prompt, str) and not request.prompt.strip()):
+        raise HTTPException(status_code=400, detail="Empty prompt provided")
+    
     # Create sampling parameters
     sampling_params = SamplingParams(
         max_tokens=request.max_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
         top_k=request.top_k,
+        frequency_penalty=request.frequency_penalty,
+        presence_penalty=request.presence_penalty,
+        stop=request.stop,
+        n=request.n,
         logprobs=request.logprobs,
     )
     
     try:
         # Generate completions
         outputs = await vllm_manager.generate(request.prompt, sampling_params)
+        
+        # Validate outputs is not empty
+        if not outputs:
+            logger.error("VLLM generated empty outputs list")
+            raise HTTPException(status_code=500, detail="Generation failed: empty outputs")
         
         # Format response
         if isinstance(request.prompt, str):
@@ -250,6 +267,10 @@ async def chat_completions(request: ChatCompletionRequest):
     # Convert chat messages to prompt
     prompt = vllm_manager.format_chat_prompt(request.messages)
     
+    # Validate prompt is not empty
+    if not prompt or not prompt.strip():
+        raise HTTPException(status_code=400, detail="Empty prompt generated from messages")
+    
     # Create sampling parameters
     sampling_params = SamplingParams(
         max_tokens=request.max_tokens,
@@ -260,12 +281,18 @@ async def chat_completions(request: ChatCompletionRequest):
         presence_penalty=request.presence_penalty,
         stop=request.stop,
         n=request.n,
-        seed=request.seed,
+        logprobs=request.logprobs,
     )
     
     try:
         # Generate completions
         outputs = await vllm_manager.generate(prompt, sampling_params)
+        
+        # Validate outputs is not empty
+        if not outputs:
+            logger.error("VLLM generated empty outputs list for chat completion")
+            raise HTTPException(status_code=500, detail="Chat completion failed: empty outputs")
+        
         output = outputs[0]
         
         # Format response in OpenAI format

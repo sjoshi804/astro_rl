@@ -5,7 +5,7 @@ Orchestrates multi-turn code generation and execution for RL training
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import httpx
 import asyncio
 import json
@@ -18,7 +18,16 @@ import uuid
 from datetime import datetime
 
 # Import ray execution engine
-from ray_execution_engine import start_instance, exec, cleanup_instance, cleanup_all_instances
+from ray_execution_engine import start_instance, execute_code, cleanup_instance, cleanup_all_instances
+
+# Import success criteria functions
+try:
+    from demo_data.success_criteria import get_success_criterion_for_task
+    SUCCESS_CRITERIA_AVAILABLE = True
+except ImportError:
+    SUCCESS_CRITERIA_AVAILABLE = False
+    def get_success_criterion_for_task(task_name: str):
+        return None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -67,6 +76,7 @@ class Turn(BaseModel):
     execution_output: str
     execution_success: bool
     timestamp: datetime
+    success_criterion_met: Optional[bool] = False
 
 class Trajectory(BaseModel):
     trajectory_id: str
@@ -91,6 +101,57 @@ active_trajectories: Dict[str, Dict] = {}
 http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 
 # Utility Functions
+def extract_python_code(text: str) -> str:
+    """Extract Python code from a text response that may contain code blocks and explanations."""
+    import re
+    
+    # First try to find code between ``` markers
+    code_block_pattern = r'```(?:python)?\s*\n(.*?)\n```'
+    matches = re.findall(code_block_pattern, text, re.DOTALL)
+    
+    if matches:
+        # Take the first code block found
+        return matches[0].strip()
+    
+    # If no code blocks found, look for lines that appear to be Python code
+    lines = text.split('\n')
+    code_lines = []
+    in_code_section = False
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Skip empty lines and common explanation patterns
+        if not stripped:
+            if in_code_section:
+                code_lines.append('')  # Preserve empty lines within code
+            continue
+        
+        # Skip lines that are clearly explanations
+        if (stripped.startswith('When this code') or 
+            stripped.startswith('This code') or
+            stripped.startswith('The output') or
+            stripped.startswith('Expected output') or
+            '```' in stripped):
+            in_code_section = False
+            continue
+        
+        # Detect Python code patterns
+        if (stripped.startswith(('#', 'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ', 'try:', 'except')) or
+            '=' in stripped or 
+            stripped.endswith(':') or
+            stripped.startswith(('print(', 'return ', 'raise '))):
+            in_code_section = True
+            code_lines.append(line)
+        elif in_code_section and (stripped.startswith(' ') or stripped.startswith('\t')):
+            # Continuation of indented code
+            code_lines.append(line)
+        elif in_code_section:
+            # Could be more code
+            code_lines.append(line)
+    
+    return '\n'.join(code_lines).strip()
+
 def save_trajectory_to_file(trajectory: Trajectory) -> str:
     """Save trajectory to a JSON file and return the file path"""
     global TRAJECTORY_RUN_DIR  # Ensure we update the global variable
@@ -143,20 +204,39 @@ def save_trajectory_to_file(trajectory: Trajectory) -> str:
         return ""
 
 def meets_completion_criteria(trajectory: List[Turn], criteria: Optional[str]) -> bool:
-    """Check if trajectory meets completion criteria"""
-    if not criteria or not trajectory:
+    """Check if trajectory meets completion criteria based on success criterion function results"""
+    if not trajectory:
         return False
     
-    # Check if execution engine reported natural completion
     last_turn = trajectory[-1]
-    if "success" in last_turn.execution_output.lower():
-        return True
     
-    # Simple heuristic: check if last execution output contains success indicators
+    # Check if the success criterion function returned True
+    # This is determined by the Ray execution engine after running the criterion function
+    if hasattr(last_turn, 'success_criterion_met'):
+        return last_turn.success_criterion_met
+    
+    # Fallback to checking execution output for success criterion result
     last_output = last_turn.execution_output.lower()
-    success_indicators = ["test passed", "success", "completed", "correct", "done"]
+    if "success criterion met: true" in last_output:
+        return True
+    elif "success criterion met: false" in last_output:
+        return False
     
-    return any(indicator in last_output for indicator in success_indicators)
+    # Legacy fallback - if no criterion function was used, fall back to text matching
+    # This ensures backward compatibility
+    if criteria:
+        criteria_keywords = [
+            "test passed", "optimized", "visualization complete", "plot created", 
+            "histogram complete", "filtering complete", "data saved", 
+            "maximum height found", "game complete", "navigation tested"
+        ]
+        
+        criteria_lower = criteria.lower()
+        for keyword in criteria_keywords:
+            if keyword in criteria_lower and keyword in last_output:
+                return True
+    
+    return False
 
 def calculate_reward(trajectory: List[Turn], termination_reason: str) -> float:
     """Binary reward: 1 if completion criteria met, else 0"""
@@ -231,9 +311,8 @@ async def generate_single_trajectory(
                 if step == 1:
                     # First step: use structured trajectory format
                     logger.info(f"Step {step}: Using structured trajectory format for initial prompt")
-                    trajectory_for_completion = {
-                        "turns": []
-                    }
+                    # Create proper trajectory structure for completion server
+                    trajectory_for_completion = {"turns": []}
                     instruction_to_send = current_instruction
                 else:
                     # After first step: concatenate all previous steps into a single string
@@ -247,13 +326,18 @@ async def generate_single_trajectory(
                         concatenated_history += "\n" + "="*60 + "\n\n"
                     
                     # Use empty trajectory since we're passing history as concatenated string
-                    trajectory_for_completion = {
-                        "turns": []
-                    }
+                    trajectory_for_completion = {"turns": []}
                     
                     # Combine history with next step instruction
                     instruction_to_send = f"{concatenated_history}{current_instruction}"
                     logger.debug(f"Concatenated history length: {len(concatenated_history)} characters")
+                
+                # Validate instruction_to_send is not empty
+                if not instruction_to_send or not instruction_to_send.strip():
+                    logger.error(f"Empty instruction at step {step}, breaking trajectory")
+                    break
+                
+                logger.info(f"Sending request to completion server with instruction length: {len(instruction_to_send)}")
                 
                 # Generate code completions using trajectory context
                 response = await http_client.post(
@@ -272,16 +356,48 @@ async def generate_single_trajectory(
                 code_completions = completion_result.get("completions", [])
                 
                 # Select best completion (for now, just take first)
-                selected_code = code_completions[0] if code_completions else ""
+                raw_code = code_completions[0] if code_completions else ""
                 
-                if not selected_code.strip():
+                if not raw_code.strip():
                     logger.warning(f"Empty code generation at step {step}")
                     break
                 
-                # Step 2: Execute code in the persistent instance
-                execution_result = execute_in_instance(instance_id, selected_code)
+                # Extract just the Python code from the response
+                selected_code = extract_python_code(raw_code)
                 
-                # Step 3: Create turn record
+                if not selected_code.strip():
+                    logger.warning(f"No Python code found in completion at step {step}")
+                    # Fall back to using the raw code
+                    selected_code = raw_code
+                
+                # Step 2: Get success criterion function for this task
+                task_name = None
+                if step == 1:  # Extract task name from initial instruction
+                    if isinstance(initial_prompt, dict) and "name" in initial_prompt:
+                        task_name = initial_prompt["name"]
+                    elif "fibonacci" in str(initial_prompt).lower():
+                        task_name = "fibonacci_sequence"
+                    elif "data analysis" in str(initial_prompt).lower() or "histogram" in str(initial_prompt).lower():
+                        task_name = "data_analysis_pipeline"
+                    elif "csv" in str(initial_prompt).lower() or "filter" in str(initial_prompt).lower():
+                        task_name = "file_processing"
+                    elif "fits" in str(initial_prompt).lower():
+                        task_name = "fits_basic_analysis"
+                
+                success_criterion_func = None
+                if SUCCESS_CRITERIA_AVAILABLE and task_name:
+                    success_criterion_func = get_success_criterion_for_task(task_name)
+                    logger.info(f"Using success criterion function for task: {task_name}")
+                
+                # Step 3: Execute code in the persistent instance
+                logger.info(f"🚀 SERVICE -> Calling Ray executor with code ({len(selected_code)} chars) for trajectory {trajectory_id}, step {step}")
+                logger.debug(f"Code to execute: {selected_code[:200]}{'...' if len(selected_code) > 200 else ''}")
+                logger.info(f"🔍 SERVICE -> instance_id='{instance_id}' (type: {type(instance_id)}, len: {len(instance_id) if isinstance(instance_id, str) else 'N/A'})")
+                logger.info(f"🔍 SERVICE -> selected_code first 50 chars: '{selected_code[:50]}'")
+                execution_result = execute_in_instance(instance_id, selected_code, success_criterion_func)
+                logger.info(f"✅ SERVICE <- Ray executor returned: state={execution_result.get('state', 'unknown')}, success={execution_result.get('success', False)}")
+                
+                # Step 4: Create turn record
                 turn = Turn(
                     step=step,
                     prompt=current_instruction,
@@ -290,24 +406,27 @@ async def generate_single_trajectory(
                     execution_success=execution_result["success"],
                     timestamp=datetime.now()
                 )
+                
+                # Add success criterion result to turn object
+                turn.success_criterion_met = execution_result.get("success_criterion_met", False)
                 turns.append(turn)
                 
-                # Step 4: Check if execution completed naturally
+                # Step 5: Check if execution completed naturally
                 if execution_result.get("completed", False):
                     logger.info(f"Trajectory {trajectory_id} completed naturally at step {step}")
                     break
                 
-                # Step 5: Check if execution should not continue (crash or max steps in engine)
+                # Step 6: Check if execution should not continue (crash or max steps in engine)
                 if not execution_result.get("should_continue", True):
                     logger.info(f"Trajectory {trajectory_id} terminated by execution engine at step {step}")
                     break
                 
-                # Step 6: Check custom completion criteria
+                # Step 7: Check custom completion criteria (now includes success criterion function results)
                 if meets_completion_criteria(turns, completion_criteria):
                     logger.info(f"Trajectory {trajectory_id} met custom completion criteria at step {step}")
                     break
                 
-                # Step 7: Update instruction for next turn
+                # Step 8: Update instruction for next turn
                 current_instruction = "Continue with the next code snippet to achieve the goal and fix any observed errors."
                 
             except Exception as e:
@@ -434,11 +553,14 @@ def create_execution_instance() -> Optional[str]:
         logger.error(f"Failed to create Ray execution instance: {e}")
         return None
 
-def execute_in_instance(instance_id: str, text: str) -> Dict[str, Any]:
+def execute_in_instance(instance_id: str, text: str, success_criterion: Optional[Callable] = None) -> Dict[str, Any]:
     """Execute code in a specific Ray execution instance"""
     try:
+        logger.info(f"📡 EXEC_IN_INSTANCE -> Calling Ray execute_code() with instance_id={instance_id}")
+        logger.debug(f"Code to execute: {text[:100]}{'...' if len(text) > 100 else ''}")
         # Execute code using Ray execution engine
-        result = exec(instance_id, text, success_criterion=None)
+        result = execute_code(instance_id, text, success_criterion=success_criterion)
+        logger.info(f"📡 EXEC_IN_INSTANCE <- Ray execute_code() returned: {result.get('state', 'unknown')}")
         
         # Convert Ray execution engine response to our expected format
         state = result.get("state", "unknown")
@@ -446,11 +568,12 @@ def execute_in_instance(instance_id: str, text: str) -> Dict[str, Any]:
         
         return {
             "output": execution_output,
-            "success": state == "completed",
+            "success": state == "success",
             "state": state,
             "step_count": 0,  # Ray engine doesn't track step count this way
-            "completed": state == "completed",
-            "should_continue": state not in ["crashed", "max_steps_exceeded"]
+            "completed": state == "success",
+            "should_continue": state not in ["crashed", "max_steps_exceeded"],
+            "success_criterion_met": result.get("success", False)
         }
     except Exception as e:
         logger.error(f"Ray execution engine error: {e}")
@@ -460,7 +583,8 @@ def execute_in_instance(instance_id: str, text: str) -> Dict[str, Any]:
             "state": "crashed",
             "step_count": 0,
             "completed": False,
-            "should_continue": False
+            "should_continue": False,
+            "success_criterion_met": False
         }
 
 # Health check and utility endpoints
