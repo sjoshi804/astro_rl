@@ -106,54 +106,60 @@ class VLLMServer:
         logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() called with prompt: {prompt}")
         if not self.is_healthy or self.is_updating:
             raise Exception(f"Server {self.hostname} is not available")
-        
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                # Use the direct generate endpoint from our VLLM wrapper
-                logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() called with prompt: {prompt}")
-                response = await client.post(
-                    f"{self.base_url}/generate",
-                    json={
-                        "prompt": prompt,
-                        "n": kwargs.get("n", 1),
-                        "temperature": kwargs.get("temperature", 0.8),
-                        "max_tokens": kwargs.get("max_tokens", 512),
-                        "top_p": kwargs.get("top_p", 1.0),
-                        "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
-                        "presence_penalty": kwargs.get("presence_penalty", 0.0),
-                        "stream": False  # Always false for this use case
-                    }
-                )
-                response.raise_for_status()
-                result = response.json()
-                logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() response: {result}")
-                
-                # Extract completions from response
-                if isinstance(prompt, str):
-                    # Single prompt response
-                    completions = [choice["text"] for choice in result.get("choices", [])]
+                # If prompt is a list of chat messages, use the chat endpoint
+                if isinstance(prompt, list):
+                    logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() using /v1/chat/completions")
+                    response = await client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json={
+                            "messages": prompt,
+                            "n": kwargs.get("n", 1),
+                            "temperature": kwargs.get("temperature", 0.8),
+                            "max_tokens": kwargs.get("max_tokens", 512),
+                            "top_p": kwargs.get("top_p", 1.0),
+                            "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
+                            "presence_penalty": kwargs.get("presence_penalty", 0.0),
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() response: {result}")
+                    completions = [choice["message"]["content"] for choice in result.get("choices", [])]
                     return {
                         "completions": completions,
                         "model": result.get("model")
                     }
                 else:
-                    # Multiple prompts response
-                    all_completions = []
-                    for res in result.get("results", []):
-                        completions = [choice["text"] for choice in res.get("choices", [])]
-                        all_completions.extend(completions)
+                    # Use the direct generate endpoint for string prompts
+                    response = await client.post(
+                        f"{self.base_url}/generate",
+                        json={
+                            "prompt": prompt,
+                            "n": kwargs.get("n", 1),
+                            "temperature": kwargs.get("temperature", 0.8),
+                            "max_tokens": kwargs.get("max_tokens", 512),
+                            "top_p": kwargs.get("top_p", 1.0),
+                            "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
+                            "presence_penalty": kwargs.get("presence_penalty", 0.0),
+                            "stream": False
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() response: {result}")
+                    completions = [choice["text"] for choice in result.get("choices", [])]
                     return {
-                        "completions": all_completions,
-                        "model": result.get("results", [{}])[0].get("model") if result.get("results") else None
+                        "completions": completions,
+                        "model": result.get("model")
                     }
-                
         except httpx.TimeoutException:
             logger.error(f"Request timeout for {self.hostname}")
             self.is_healthy = False
             raise Exception(f"Request to {self.hostname} timed out")
         except Exception as e:
             logger.error(f"Completion request failed for {self.hostname}: {e}")
-            # Mark as unhealthy on failure
             self.is_healthy = False
             raise
     
@@ -279,15 +285,11 @@ class CompletionServerManager:
         server = self.get_available_server()
         if not server:
             raise HTTPException(status_code=503, detail="No available VLLM servers")
-        
-        # Build prompt from trajectory
-        prompt = self._build_prompt_from_trajectory(request.trajectory, request.instruction)
-        
+        # Always expect the prompt to be fully constructed by the client
+        prompt = getattr(request, 'messages', None) or getattr(request, 'instruction', None)
         try:
-            # Track request count
             self.request_counter += 1
             self.server_request_counts[server.hostname] += 1
-            
             result = await server.generate_completion(
                 prompt=prompt,
                 n=request.n,
@@ -298,13 +300,11 @@ class CompletionServerManager:
                 presence_penalty=request.presence_penalty,
                 stop=request.stop or ["```", "\nStep", "\nRequest:", "\nExecution"]
             )
-            
             return GenerateCompletionResponse(
                 completions=result["completions"],
                 server_used=server.hostname,
                 model_used=result.get("model")
             )
-            
         except Exception as e:
             logger.error(f"Completion generation failed: {e}")
             raise HTTPException(status_code=500, detail=f"Completion generation failed: {str(e)}")
@@ -358,6 +358,56 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Completion Server", lifespan=lifespan)
 
 # API Endpoints
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: dict):
+    """
+    OpenAI-compatible chat completions endpoint
+    Forwards to VLLM servers
+    """
+    if not completion_manager:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    
+    server = completion_manager.get_available_server()
+    if not server:
+        raise HTTPException(status_code=503, detail="No available VLLM servers")
+    
+    try:
+        messages = request.get("messages", [])
+        result = await server.generate_completion(
+            prompt=messages,
+            n=request.get("n", 1),
+            temperature=request.get("temperature", 0.8),
+            max_tokens=request.get("max_tokens", 512),
+            top_p=request.get("top_p", 1.0),
+            frequency_penalty=request.get("frequency_penalty", 0.0),
+            presence_penalty=request.get("presence_penalty", 0.0)
+        )
+        
+        # Return OpenAI-compatible response format
+        choices = []
+        for i, completion in enumerate(result["completions"]):
+            choices.append({
+                "index": i,
+                "message": {
+                    "role": "assistant",
+                    "content": completion
+                },
+                "finish_reason": "stop"
+            })
+        
+        return {
+            "choices": choices,
+            "model": result.get("model", "unknown"),
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
+    except Exception as e:
+        logger.error(f"Chat completions failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat completions failed: {str(e)}")
 
 @app.post("/generate", response_model=GenerateCompletionResponse)
 async def generate_completion(request: GenerateCompletionRequest):

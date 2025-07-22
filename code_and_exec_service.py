@@ -18,6 +18,12 @@ import uuid
 from datetime import datetime
 import re
 import ast
+import xml.sax.saxutils as saxutils
+
+FORMAT_INSTRUCTIONS = """
+Generate python code to solve the task.
+Return the code in the following format in markdown format code-blocks.
+"""
 
 # Import ray execution engine
 from ray_execution_engine import start_instance, execute_code, cleanup_instance, cleanup_all_instances
@@ -239,6 +245,23 @@ def calculate_reward(trajectory: List[Turn], termination_reason: str) -> float:
 
 # API Endpoints
 
+@app.post("/v1/chat/completions")
+async def chat_completions(request: dict):
+    """
+    OpenAI-compatible chat completions endpoint
+    Forwards requests to completion server
+    """
+    try:
+        response = await http_client.post(
+            f"{COMPLETION_SERVER_URL}/v1/chat/completions",
+            json=request
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Chat completions error: {e}")
+        raise HTTPException(status_code=500, detail=f"Chat completions failed: {str(e)}")
+
 @app.post("/generate_trajectories")
 async def generate_trajectories(request: BatchTrajectoryRequest) -> List[Trajectory]:
     """
@@ -304,64 +327,36 @@ async def generate_single_trajectory(
     try:
         for step in range(1, max_turns + 1):
             try:
-                # For first step, use structured trajectory. For subsequent steps, use concatenated string format
-                if step == 1:
-                    # First step: use structured trajectory format
-                    logger.info(f"Step {step}: Using structured trajectory format for initial prompt")
-                    # Create proper trajectory structure for completion server
-                    trajectory_for_completion = {"turns": []}
-                    instruction_to_send = current_instruction
-                else:
-                    # After first step: concatenate all previous steps into a single string
-                    logger.info(f"Step {step}: Using concatenated string format with {len(turns)} previous turns")
-                    concatenated_history = ""
-                    for turn in turns:
-                        concatenated_history += f"Step {turn.step}:\n"
-                        concatenated_history += f"Prompt: {turn.prompt}\n"
-                        concatenated_history += f"Code:\n{turn.code}\n"
-                        concatenated_history += f"Execution Output: {turn.execution_output}\n"
-                        concatenated_history += "\n" + "="*60 + "\n\n"
-                    
-                    # Use empty trajectory since we're passing history as concatenated string
-                    trajectory_for_completion = {"turns": []}
-                    
-                    # Combine history with next step instruction
-                    instruction_to_send = f"{concatenated_history}{current_instruction}"
-                    logger.debug(f"Concatenated history length: {len(concatenated_history)} characters")
-                
-                # Validate instruction_to_send is not empty
-                if not instruction_to_send or not instruction_to_send.strip():
-                    logger.error(f"Empty instruction at step {step}, breaking trajectory")
-                    break
-                
-                logger.info(f"Sending request to completion server with instruction length: {len(instruction_to_send)}")
-                
-                # Generate code completions using trajectory context
+                # Build chat messages with XML tags for each turn
+                messages = []
+                # Optionally add a system prompt
+                messages.append({"role": "system", "content": "You are a helpful AI code assistant. Respond with Python code in markdown code blocks."})
+                for turn in turns:
+                    turn_content = f"<turn>\n<prompt>{saxutils.escape(turn.prompt)}</prompt>\n<code>{saxutils.escape(turn.code)}</code>\n<output>{saxutils.escape(turn.execution_output)}</output>\n<success>{turn.execution_success}</success>\n</turn>"
+                    messages.append({"role": "user", "content": turn_content})
+                # Add the current instruction as the next user message
+                current_content = f"<turn>\n<prompt>{saxutils.escape(current_instruction)}</prompt>\n</turn>\n{FORMAT_INSTRUCTIONS}"
+                messages.append({"role": "user", "content": current_content})
+                # Call the chat endpoint
                 response = await http_client.post(
-                    f"{COMPLETION_SERVER_URL}/generate",
+                    f"{COMPLETION_SERVER_URL}/v1/chat/completions",
                     json={
-                        "trajectory": trajectory_for_completion,
-                        "instruction": instruction_to_send,
-                        "n": 4,
+                        "messages": messages,
+                        "n": 1,
                         "temperature": 0.8,
                         "max_tokens": 512
                     }
                 )
                 response.raise_for_status()
                 completion_result = response.json()
-                logger.info(f"Completion result: {completion_result}")
-                code_completions = completion_result.get("completions", [])
-                
-                # Select best completion (for now, just take first)
-                raw_code = code_completions[0] if code_completions else ""
-                
-                if not raw_code.strip():
+                logger.info(f"Chat completion result: {completion_result}")
+                choices = completion_result.get("choices", [])
+                if not choices or "message" not in choices[0] or "content" not in choices[0]["message"]:
                     logger.warning(f"Empty code generation at step {step}")
                     break
-                
+                raw_code = choices[0]["message"]["content"]
                 # Extract just the Python code from the response
                 selected_code = extract_python_code(raw_code)
-                
                 if not selected_code.strip():
                     logger.warning(f"No Python code found in completion at step {step}")
                     # Fall back to using the raw code
