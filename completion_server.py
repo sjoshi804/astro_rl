@@ -24,6 +24,11 @@ VLLM_HOSTNAMES = []
 HEALTH_CHECK_INTERVAL = 10  # seconds
 REQUEST_TIMEOUT = 300  # seconds (increased for large generations)
 
+FORMAT_INSTRUCTIONS = """
+Generate python code to solve the task.
+Return the code in the following format in markdown format code-blocks.
+"""
+
 # Data Models
 class Turn(BaseModel):
     step: int
@@ -37,7 +42,7 @@ class Trajectory(BaseModel):
 
 class GenerateCompletionRequest(BaseModel):
     trajectory: Trajectory
-    instruction: str = "Generate next code snippet to achieve the goal"
+    instruction: str
     n: int = 4
     temperature: float = 0.8
     max_tokens: int = 512
@@ -105,6 +110,7 @@ class VLLMServer:
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
                 # Use the direct generate endpoint from our VLLM wrapper
+                logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() called with prompt: {prompt}")
                 response = await client.post(
                     f"{self.base_url}/generate",
                     json={
@@ -115,12 +121,12 @@ class VLLMServer:
                         "top_p": kwargs.get("top_p", 1.0),
                         "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
                         "presence_penalty": kwargs.get("presence_penalty", 0.0),
-                        "stop": kwargs.get("stop"),
                         "stream": False  # Always false for this use case
                     }
                 )
                 response.raise_for_status()
                 result = response.json()
+                logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() response: {result}")
                 
                 # Extract completions from response
                 if isinstance(prompt, str):
@@ -251,7 +257,7 @@ class CompletionServerManager:
         """Build a prompt from trajectory"""
         if not trajectory.turns:
             # For first step, use clear prompt structure that encourages code-only generation
-            return f"{instruction}\n\nRespond with Python code only. No explanations or comments outside the code.\n\n```python\n# Python code to solve the task:"
+            return f"{instruction}\n\n{FORMAT_INSTRUCTIONS}"
         
         prompt_parts = [instruction, "\n\nConversation history:"]
         
@@ -264,8 +270,7 @@ class CompletionServerManager:
                 status = "✓" if turn.execution_success else "✗"
                 prompt_parts.append(f"Execution {status}: {turn.execution_output}")
         
-        prompt_parts.append(f"\nNext step - Generate Python code only. No explanations.")
-        prompt_parts.append("```python\n# Python code:")
+        prompt_parts.append(f"\n Continue generating code to achieve the original goal - {FORMAT_INSTRUCTIONS}")
         
         return "\n".join(prompt_parts)
     

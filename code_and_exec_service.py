@@ -16,6 +16,8 @@ import logging
 import argparse
 import uuid
 from datetime import datetime
+import re
+import ast
 
 # Import ray execution engine
 from ray_execution_engine import start_instance, execute_code, cleanup_instance, cleanup_all_instances
@@ -102,80 +104,34 @@ http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 
 # Utility Functions
 def extract_python_code(text: str) -> str:
-    """Extract Python code from a text response that may contain code blocks and explanations."""
-    import re
-    import ast
+    """Extract Python code from a text response that may contain multiple code blocks and explanations."""
+    logger.info(f"Extracting Python code from text: {text}...")
+    logger.info(f"Text length: {len(text)}")
     
-    # First try to find code between ``` markers
+    # Find all code blocks between ```python ... ```
     code_block_pattern = r'```(?:python)?\s*\n?(.*?)\n?```'
     matches = re.findall(code_block_pattern, text, re.DOTALL)
     
-    if matches:
-        # Take the first code block found
-        code = matches[0].strip()
+    valid_blocks = []
+    for code in matches:
+        code = code.strip()
         # Remove any leading comments that are instructions
         lines = code.split('\n')
         clean_lines = []
         for line in lines:
-            if line.strip().startswith('# Python code'):
+            if line.strip().startswith('python'):
                 continue
             clean_lines.append(line)
         code = '\n'.join(clean_lines).strip()
-        
-        # Validate it's actually Python code
         if is_valid_python_code(code):
-            return code
+            valid_blocks.append(code)
     
-    # If no code blocks found, look for lines that appear to be Python code
-    lines = text.split('\n')
-    code_lines = []
-    in_code_section = False
-    
-    # Skip natural language patterns
-    natural_language_patterns = [
-        'when this code', 'this code', 'the output', 'expected output',
-        'this will', 'this should', 'the result', 'here is', 'here\'s',
-        'to solve this', 'explanation:', 'note:', 'answer:', 'solution:'
-    ]
-    
-    for line in lines:
-        stripped = line.strip().lower()
-        
-        # Skip empty lines and common explanation patterns
-        if not stripped:
-            if in_code_section:
-                code_lines.append('')  # Preserve empty lines within code
-            continue
-        
-        # Skip lines that are clearly explanations or natural language
-        if (any(pattern in stripped for pattern in natural_language_patterns) or
-            '```' in stripped):
-            in_code_section = False
-            continue
-        
-        # Detect Python code patterns
-        if (line.strip().startswith(('#', 'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ', 'try:', 'except')) or
-            '=' in line.strip() or 
-            line.strip().endswith(':') or
-            line.strip().startswith(('print(', 'return ', 'raise '))):
-            in_code_section = True
-            code_lines.append(line)
-        elif in_code_section and (line.startswith(' ') or line.startswith('\t')):
-            # Continuation of indented code
-            code_lines.append(line)
-        elif in_code_section:
-            # Could be more code
-            code_lines.append(line)
-    
-    extracted_code = '\n'.join(code_lines).strip()
-    
-    # Validate the extracted code is actually Python
-    if extracted_code and is_valid_python_code(extracted_code):
-        return extracted_code
-    
-    # If we couldn't extract valid Python code, return a safe fallback
-    logger.warning(f"Could not extract valid Python code from VLLM output: {text[:100]}...")
-    return "# Unable to extract valid Python code from response\npass"
+    if valid_blocks:
+        # Concatenate all valid code blocks with newlines
+        return '\n\n'.join(valid_blocks)
+    else:
+        logger.warning(f"Could not extract valid Python code from VLLM output: {text}...")
+        return "# Unable to extract valid Python code from response\npass"
 
 def is_valid_python_code(code: str) -> bool:
     """Check if the given string is valid Python code"""
@@ -391,6 +347,7 @@ async def generate_single_trajectory(
                 )
                 response.raise_for_status()
                 completion_result = response.json()
+                logger.info(f"Completion result: {completion_result}")
                 code_completions = completion_result.get("completions", [])
                 
                 # Select best completion (for now, just take first)
@@ -559,15 +516,15 @@ async def call_completion_server(prompt: str, num_completions: int = 4) -> List[
                     })
                 trajectory["turns"] = turns
         
+        # Always append markdown wrapping instruction
         response = await http_client.post(
             f"{COMPLETION_SERVER_URL}/generate",
             json={
                 "trajectory": trajectory,
-                "instruction": prompt if not trajectory["turns"] else "Generate next code snippet to achieve the goal",
+                "instruction": prompt,
                 "n": num_completions,
                 "temperature": 0.8,
-                "max_tokens": 512,
-                "stop": ["```", "\n\n#", "\nUser:", "\nExecution:"]
+                "max_tokens": 512
             }
         )
         response.raise_for_status()
