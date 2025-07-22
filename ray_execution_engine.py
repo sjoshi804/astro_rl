@@ -27,70 +27,37 @@ def get_result(
 @ray.remote
 class RayCodeExecutor:
     def __init__(self, actor_id: str, timeout_in_secs: float = 30.0):
-        self.actor_id = actor_id
+        self.id = actor_id
         self.locals = {}
-        self.globals = {}
         self.current_turn = 0
-        self.timeout = timeout_in_secs
-        self.max_steps = 100
-        
-        # Initialize with basic imports and utilities
-        self.globals.update({
-            '__builtins__': __builtins__,
-            'print': print,
-            'len': len,
-            'range': range,
-            'list': list,
-            'dict': dict,
-            'str': str,
-            'int': int,
-            'float': float,
-            'bool': bool,
-        })
-        
-        print(f"🚀 RayCodeExecutor {actor_id} initialized", file=sys.stderr)
-        
+
     def execute(self, code: str, success_criterion: Optional[str] = None) -> Dict[str, Any]:
         """Execute code and return structured response with state and output."""
         start_time = time.time()
-        
-        # Create fresh string buffers for this execution
         stdout_buffer = StringIO()
         stderr_buffer = StringIO()
-        
-        # Save original stdout/stderr 
         original_stdout = sys.stdout
         original_stderr = sys.stderr
-        
+
         try:
-            # Redirect output
             sys.stdout = stdout_buffer
             sys.stderr = stderr_buffer
-            
-            # Execute the code in the persistent namespace
-            # Use both globals and locals for proper scoping
-            exec(code, self.globals, self.locals)
-            
-            # Update globals with any new definitions from locals
-            self.globals.update({k: v for k, v in locals().items() 
-                               if not k.startswith('_')})
-        
-            
+
+            # Execute code in namespace
+            exec(code, globals(), self.locals)
+            self.locals.update(locals())
+
         except Exception as e:
-            # Capture the full traceback
             error_traceback = traceback.format_exc()
             stderr_buffer.write(f"Execution Error: {error_traceback}")
-            
+
         finally:
-            # Always restore stdout/stderr
             sys.stdout = original_stdout
             sys.stderr = original_stderr
-        
-        # Get captured output
+
         stdout_content = stdout_buffer.getvalue()
         stderr_content = stderr_buffer.getvalue()
-        
-        # Combine outputs
+
         execution_output = ""
         if stdout_content:
             execution_output += stdout_content
@@ -99,28 +66,25 @@ class RayCodeExecutor:
                 execution_output += "\n" + stderr_content
             else:
                 execution_output = stderr_content
-                
+
         # Check success criterion if provided
         success = False
         success_message = ""
-        
         if success_criterion:
             try:
-                # Execute the success criterion in the same namespace
-                success_result = eval(success_criterion, self.globals, self.locals)
+                success_result = eval(success_criterion, globals(), self.locals)
                 success = bool(success_result)
                 success_message = f"Success criterion '{success_criterion}' evaluated to: {success_result}"
             except Exception as e:
                 success = False
                 success_message = f"Success criterion failed: {str(e)}"
-        
-        # Determine state
+
         has_error = "Error:" in stderr_content or "Traceback" in stderr_content
         state = "crashed" if has_error else ("success" if success or not success_criterion else "running")
-        
+
         self.current_turn += 1
         execution_time = time.time() - start_time
-        
+
         result = {
             "state": state,
             "execution_output": execution_output.strip(),
@@ -128,26 +92,26 @@ class RayCodeExecutor:
             "turn": self.current_turn,
             "success": success,
             "success_message": success_message,
-            "actor_id": self.actor_id,
-            "variables": list(self.locals.keys())  # Available variables
+            "actor_id": self.id,
+            "variables": list(self.locals.keys())
         }
-        
-        print(f"🔍 Actor {self.actor_id} executed turn {self.current_turn}, state: {state}", file=sys.stderr)
+
+        print(f"🔍 Actor {self.id} executed turn {self.current_turn}, state: {state}", file=sys.stderr)
         return result
-    
+
     def get_variable(self, var_name: str) -> Any:
         """Get the value of a variable from the executor's namespace."""
         if var_name in self.locals:
             return self.locals[var_name]
-        elif var_name in self.globals:
-            return self.globals[var_name]
+        elif var_name in globals():
+            return globals()[var_name]
         else:
             raise NameError(f"Variable '{var_name}' not found")
-    
+
     def get_namespace_info(self) -> Dict[str, Any]:
         """Get information about the current namespace."""
         return {
-            "actor_id": self.actor_id,
+            "actor_id": self.id,
             "turn": self.current_turn,
             "local_variables": list(self.locals.keys()),
             "local_variable_types": {k: type(v).__name__ for k, v in self.locals.items()},
