@@ -104,22 +104,42 @@ http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
 def extract_python_code(text: str) -> str:
     """Extract Python code from a text response that may contain code blocks and explanations."""
     import re
+    import ast
     
     # First try to find code between ``` markers
-    code_block_pattern = r'```(?:python)?\s*\n(.*?)\n```'
+    code_block_pattern = r'```(?:python)?\s*\n?(.*?)\n?```'
     matches = re.findall(code_block_pattern, text, re.DOTALL)
     
     if matches:
         # Take the first code block found
-        return matches[0].strip()
+        code = matches[0].strip()
+        # Remove any leading comments that are instructions
+        lines = code.split('\n')
+        clean_lines = []
+        for line in lines:
+            if line.strip().startswith('# Python code'):
+                continue
+            clean_lines.append(line)
+        code = '\n'.join(clean_lines).strip()
+        
+        # Validate it's actually Python code
+        if is_valid_python_code(code):
+            return code
     
     # If no code blocks found, look for lines that appear to be Python code
     lines = text.split('\n')
     code_lines = []
     in_code_section = False
     
+    # Skip natural language patterns
+    natural_language_patterns = [
+        'when this code', 'this code', 'the output', 'expected output',
+        'this will', 'this should', 'the result', 'here is', 'here\'s',
+        'to solve this', 'explanation:', 'note:', 'answer:', 'solution:'
+    ]
+    
     for line in lines:
-        stripped = line.strip()
+        stripped = line.strip().lower()
         
         # Skip empty lines and common explanation patterns
         if not stripped:
@@ -127,30 +147,49 @@ def extract_python_code(text: str) -> str:
                 code_lines.append('')  # Preserve empty lines within code
             continue
         
-        # Skip lines that are clearly explanations
-        if (stripped.startswith('When this code') or 
-            stripped.startswith('This code') or
-            stripped.startswith('The output') or
-            stripped.startswith('Expected output') or
+        # Skip lines that are clearly explanations or natural language
+        if (any(pattern in stripped for pattern in natural_language_patterns) or
             '```' in stripped):
             in_code_section = False
             continue
         
         # Detect Python code patterns
-        if (stripped.startswith(('#', 'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ', 'try:', 'except')) or
-            '=' in stripped or 
-            stripped.endswith(':') or
-            stripped.startswith(('print(', 'return ', 'raise '))):
+        if (line.strip().startswith(('#', 'import ', 'from ', 'def ', 'class ', 'if ', 'for ', 'while ', 'try:', 'except')) or
+            '=' in line.strip() or 
+            line.strip().endswith(':') or
+            line.strip().startswith(('print(', 'return ', 'raise '))):
             in_code_section = True
             code_lines.append(line)
-        elif in_code_section and (stripped.startswith(' ') or stripped.startswith('\t')):
+        elif in_code_section and (line.startswith(' ') or line.startswith('\t')):
             # Continuation of indented code
             code_lines.append(line)
         elif in_code_section:
             # Could be more code
             code_lines.append(line)
     
-    return '\n'.join(code_lines).strip()
+    extracted_code = '\n'.join(code_lines).strip()
+    
+    # Validate the extracted code is actually Python
+    if extracted_code and is_valid_python_code(extracted_code):
+        return extracted_code
+    
+    # If we couldn't extract valid Python code, return a safe fallback
+    logger.warning(f"Could not extract valid Python code from VLLM output: {text[:100]}...")
+    return "# Unable to extract valid Python code from response\npass"
+
+def is_valid_python_code(code: str) -> bool:
+    """Check if the given string is valid Python code"""
+    if not code or not code.strip():
+        return False
+    
+    try:
+        # Try to parse the code as Python AST
+        ast.parse(code)
+        return True
+    except SyntaxError:
+        return False
+    except Exception:
+        return False
 
 def save_trajectory_to_file(trajectory: Trajectory) -> str:
     """Save trajectory to a JSON file and return the file path"""
@@ -347,8 +386,7 @@ async def generate_single_trajectory(
                         "instruction": instruction_to_send,
                         "n": 4,
                         "temperature": 0.8,
-                        "max_tokens": 512,
-                        "stop": ["```", "\nUser:", "\nExecution:"]
+                        "max_tokens": 512
                     }
                 )
                 response.raise_for_status()
@@ -561,11 +599,11 @@ def execute_in_instance(instance_id: str, text: str, success_criterion: Optional
         # Execute code using Ray execution engine
         result = execute_code(instance_id, text, success_criterion=success_criterion)
         logger.info(f"📡 EXEC_IN_INSTANCE <- Ray execute_code() returned: {result.get('state', 'unknown')}")
+        logger.info(f"📡 EXEC_IN_INSTANCE <- Ray execute_code() returned: {result.get('execution_output', '')}")
         
         # Convert Ray execution engine response to our expected format
         state = result.get("state", "unknown")
         execution_output = result.get("execution_output", "")
-        
         return {
             "output": execution_output,
             "success": state == "success",

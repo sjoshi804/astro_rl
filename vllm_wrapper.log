@@ -1,0 +1,27 @@
+INFO 07-21 01:54:33 [__init__.py:252] No platform detected, vLLM is running on UnspecifiedPlatform
+WARNING 07-21 01:54:34 [_custom_ops.py:21] Failed to import from vllm._C with ImportError('libcuda.so.1: cannot open shared object file: No such file or directory')
+INFO:__main__:Starting VLLM Wrapper
+INFO:__main__:Model path: mock-model
+INFO:__main__:Wrapper address: 0.0.0.0:8200
+INFO:__main__:Tensor parallel size: 1
+INFO:     Started server process [1629458]
+INFO:     Waiting for application startup.
+INFO:__main__:Initializing VLLM with model: mock-model
+INFO 07-21 01:54:36 [__init__.py:30] Available plugins for group vllm.general_plugins:
+INFO 07-21 01:54:36 [__init__.py:32] name=lora_filesystem_resolver, value=vllm.plugins.lora_resolvers.filesystem_resolver:register_filesystem_resolver
+INFO 07-21 01:54:36 [__init__.py:34] all available plugins for group vllm.general_plugins will be loaded.
+INFO 07-21 01:54:36 [__init__.py:36] set environment variable VLLM_PLUGINS to control which plugins to load.
+INFO 07-21 01:54:36 [__init__.py:44] plugin lora_filesystem_resolver loaded.
+ERROR:__main__:Failed to initialize VLLM: Failed to infer device type, please set the environment variable `VLLM_LOGGING_LEVEL=DEBUG` to turn on verbose logging to help debug the issue.
+ERROR:__main__:Failed to initialize VLLM
+ERROR:    Traceback (most recent call last):
+  File "/work/10450/sjoshi804/vista/miniconda3/envs/vllm/lib/python3.12/site-packages/starlette/routing.py", line 692, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+  File "/work/10450/sjoshi804/vista/miniconda3/envs/vllm/lib/python3.12/contextlib.py", line 204, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/work/10450/sjoshi804/vista/astro_rl/vllm_wrapper.py", line 167, in lifespan
+    raise RuntimeError("Failed to initialize VLLM")
+RuntimeError: Failed to initialize VLLM
+
+ERROR:    Application startup failed. Exiting.

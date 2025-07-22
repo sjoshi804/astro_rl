@@ -98,6 +98,7 @@ class VLLMServer:
     
     async def generate_completion(self, prompt: Union[str, List[str]], **kwargs) -> Dict[str, Any]:
         """Generate completion using this VLLM server"""
+        logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() called with prompt: {prompt}")
         if not self.is_healthy or self.is_updating:
             raise Exception(f"Server {self.hostname} is not available")
         
@@ -249,7 +250,8 @@ class CompletionServerManager:
     def _build_prompt_from_trajectory(self, trajectory: Trajectory, instruction: str) -> str:
         """Build a prompt from trajectory"""
         if not trajectory.turns:
-            return f"{instruction}\n\nGenerate Python code to solve this problem:\n```python"
+            # For first step, use clear prompt structure that encourages code-only generation
+            return f"{instruction}\n\nRespond with Python code only. No explanations or comments outside the code.\n\n```python\n# Python code to solve the task:"
         
         prompt_parts = [instruction, "\n\nConversation history:"]
         
@@ -262,8 +264,8 @@ class CompletionServerManager:
                 status = "✓" if turn.execution_success else "✗"
                 prompt_parts.append(f"Execution {status}: {turn.execution_output}")
         
-        prompt_parts.append(f"\nNext step - Generate the next code snippet:")
-        prompt_parts.append("```python")
+        prompt_parts.append(f"\nNext step - Generate Python code only. No explanations.")
+        prompt_parts.append("```python\n# Python code:")
         
         return "\n".join(prompt_parts)
     

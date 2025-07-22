@@ -24,7 +24,6 @@ def get_result(
             raise
     return x
 
-
 @ray.remote
 class RayCodeExecutor:
     def __init__(self, actor_id: str, timeout_in_secs: float = 30.0):
@@ -73,8 +72,9 @@ class RayCodeExecutor:
             exec(code, self.globals, self.locals)
             
             # Update globals with any new definitions from locals
-            self.globals.update({k: v for k, v in self.locals.items() 
+            self.globals.update({k: v for k, v in locals().items() 
                                if not k.startswith('_')})
+        
             
         except Exception as e:
             # Capture the full traceback

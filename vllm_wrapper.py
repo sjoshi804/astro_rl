@@ -53,10 +53,15 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
     model: Optional[str] = None
-    max_tokens: int = 100
-    temperature: float = 0.7
+    max_tokens: int = 512  # Match completion server default
+    temperature: float = 0.8  # Match completion server default
     top_p: float = 1.0
     top_k: int = -1
+    frequency_penalty: float = 0.0  # Add missing parameter
+    presence_penalty: float = 0.0   # Add missing parameter
+    stop: Optional[List[str]] = None  # Add missing parameter
+    n: int = 1  # Add missing parameter
+    logprobs: Optional[int] = None  # Add missing parameter
 
 class VLLMManager:
     """Manages the VLLM LLM instance"""

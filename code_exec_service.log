@@ -1,0 +1,20 @@
+/work/10450/sjoshi804/vista/astro_rl/code_and_exec_service.py:50: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("shutdown")
+INFO:__main__:Starting Code Generation & Execution Service with Ray
+INFO:__main__:Completion Server: http://localhost:8000
+INFO:__main__:Ray Execution Engine: Embedded
+INFO:__main__:Ray Timeout per Step: 30.0s
+INFO:__main__:Ray CPUs per Actor: 1
+INFO:__main__:Ray GPUs per Actor: 0
+INFO:__main__:Max Turns: 10
+INFO:__main__:Timeout: 30s
+INFO:__main__:Trajectory Output Directory: /work/10450/sjoshi804/vista/astro_rl/trajectories
+INFO:     Started server process [1629457]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
