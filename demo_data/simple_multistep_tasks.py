@@ -186,6 +186,13 @@ MULTITURN_TEST_TASKS = [
         "completion_criteria": "error recovery complete",
         "expected_steps": 3,
         "description": "Multi-turn error handling and recovery learning"
+    },
+    {
+        "name": "multiturn_random_success",
+        "prompt": "Demonstrate a multi-step process: first print 'Step 1 complete', then print 'Step 2 complete', then print 'Step 3 complete'. Each step should be in a separate code cell. The task will randomly succeed with 50% probability on each turn, so it may require multiple turns to complete.",
+        "completion_criteria": "random success",
+        "expected_steps": 3,
+        "description": "Multi-turn test with random 50% success criterion for pipeline testing"
     }
 ]
 

@@ -72,7 +72,7 @@ export CONDA_ENV="astro_rl"
 # DEMO CONFIGURATION - CHANGE THIS TO SELECT DEMO TYPE
 # =============================================================================
 # Available configs: quick, standard, comprehensive, astronomy_focused, programming_focused, output_tests, multiturn_tests
-export DEMO_CONFIG="output_tests"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
+export DEMO_CONFIG="multiturn_tests"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
 
 # Data Generation Configuration
 export TRAJECTORY_OUTPUT_DIR="./trajectories"

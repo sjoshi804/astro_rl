@@ -277,6 +277,8 @@ async def generate_single_trajectory(
     completion_criteria: Optional[str] = None
 ) -> Trajectory:
     """Generate a single multi-turn trajectory"""
+    # Force max_turns to 10 always
+    max_turns = 10
     
     trajectory_id = str(uuid.uuid4())
     turns = []
@@ -406,17 +408,7 @@ async def generate_single_trajectory(
                 turn.success_criterion_met = execution_result.get("success_criterion_met", False)
                 turns.append(turn)
                 
-                # Step 5: Check if execution completed naturally
-                if execution_result.get("completed", False):
-                    logger.info(f"Trajectory {trajectory_id} completed naturally at step {step}")
-                    break
-                
-                # Step 6: Check if execution should not continue (crash or max steps in engine)
-                if not execution_result.get("should_continue", True):
-                    logger.info(f"Trajectory {trajectory_id} terminated by execution engine at step {step}")
-                    break
-                
-                # Step 7: Check custom completion criteria (now includes success criterion function results)
+                # Step 5: Check custom completion criteria (now includes success criterion function results)
                 if meets_completion_criteria(turns, completion_criteria):
                     logger.info(f"Trajectory {trajectory_id} met custom completion criteria at step {step}")
                     break
@@ -426,7 +418,7 @@ async def generate_single_trajectory(
                 
             except Exception as e:
                 logger.error(f"Error in trajectory {trajectory_id} at step {step}: {e}")
-                # Add error turn and break
+                # Add error turn and continue (do not break)
                 error_turn = Turn(
                     step=step,
                     prompt=current_instruction,
@@ -436,7 +428,8 @@ async def generate_single_trajectory(
                     timestamp=datetime.now()
                 )
                 turns.append(error_turn)
-                break
+                # Continue to next turn instead of breaking
+                continue
     
     finally:
         # Always attempt to cleanup the execution instance
@@ -457,10 +450,6 @@ async def generate_single_trajectory(
             termination_reason = "max_steps"
         elif meets_completion_criteria(turns, completion_criteria):
             termination_reason = "completion_criteria_met"
-        elif last_turn.execution_success and "success" in last_turn.execution_output.lower():
-            termination_reason = "completion_criteria_met"
-        elif not last_turn.execution_success:
-            termination_reason = "execution_error"
         else:
             termination_reason = "max_steps"
     

@@ -195,7 +195,6 @@ async def generate(request: GenerateRequest):
         top_k=request.top_k,
         frequency_penalty=request.frequency_penalty,
         presence_penalty=request.presence_penalty,
-        stop=request.stop,
         n=request.n,
         logprobs=request.logprobs,
     )
@@ -284,7 +283,6 @@ async def chat_completions(request: ChatCompletionRequest):
         top_k=request.top_k,
         frequency_penalty=request.frequency_penalty,
         presence_penalty=request.presence_penalty,
-        stop=request.stop,
         n=request.n,
         logprobs=request.logprobs,
     )

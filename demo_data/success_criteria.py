@@ -201,9 +201,9 @@ def multiturn_error_recovery_criterion(locals_dict: Dict[str, Any]) -> bool:
         return False
 
 # Random success criteria for demo purposes
-def random_success_criterion_50_50(locals_dict: Dict[str, Any]) -> bool:
+def random_success_criterion_10_90(locals_dict: Dict[str, Any]) -> bool:
     """Random 50/50 success for demo purposes"""
-    return random.random() < 0.5
+    return random.random() < 0.1
 
 def random_success_criterion_70_30(locals_dict: Dict[str, Any]) -> bool:
     """Random 70% success rate for demo purposes"""
@@ -250,11 +250,13 @@ TASK_SUCCESS_CRITERIA = {
     
     # Random criteria for other tasks
     "web_data_fetch": random_success_criterion_70_30,
-    "statistics_experiment": random_success_criterion_50_50,
+    "statistics_experiment": random_success_criterion_10_90,
     "number_guessing_game": random_success_criterion_step_based,
     "text_adventure": random_success_criterion_70_30,
+    # Add mapping for the new multi-turn random success test
+    "multiturn_random_success": random_success_criterion_10_90,
 }
 
 def get_success_criterion_for_task(task_name: str):
     """Get the success criterion function for a given task"""
-    return TASK_SUCCESS_CRITERIA.get(task_name, random_success_criterion_50_50) 
+    return TASK_SUCCESS_CRITERIA.get(task_name, random_success_criterion_10_90) 
