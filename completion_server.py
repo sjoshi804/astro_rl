@@ -24,32 +24,7 @@ VLLM_HOSTNAMES = []
 HEALTH_CHECK_INTERVAL = 10  # seconds
 REQUEST_TIMEOUT = 300  # seconds (increased for large generations)
 
-FORMAT_INSTRUCTIONS = """
-Generate python code to solve the task.
-Return the code in the following format in markdown format code-blocks.
-"""
-
-# Data Models
-class Turn(BaseModel):
-    step: int
-    prompt: str
-    code: str
-    execution_output: str
-    execution_success: bool
-
-class Trajectory(BaseModel):
-    turns: List[Turn]
-
-class GenerateCompletionRequest(BaseModel):
-    trajectory: Trajectory
-    instruction: str
-    n: int = 4
-    temperature: float = 0.8
-    max_tokens: int = 512
-    stop: Optional[List[str]] = None
-    top_p: float = 1.0
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
+# Data Models - simplified for load balancing only
 
 class GenerateCompletionResponse(BaseModel):
     completions: List[str]
@@ -132,28 +107,7 @@ class VLLMServer:
                         "model": result.get("model")
                     }
                 else:
-                    # Use the direct generate endpoint for string prompts
-                    response = await client.post(
-                        f"{self.base_url}/generate",
-                        json={
-                            "prompt": prompt,
-                            "n": kwargs.get("n", 1),
-                            "temperature": kwargs.get("temperature", 0.8),
-                            "max_tokens": kwargs.get("max_tokens", 512),
-                            "top_p": kwargs.get("top_p", 1.0),
-                            "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
-                            "presence_penalty": kwargs.get("presence_penalty", 0.0),
-                            "stream": False
-                        }
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    logger.info(f"🔍 COMPLETION_SERVER <- VLLMServer.generate_completion() response: {result}")
-                    completions = [choice["text"] for choice in result.get("choices", [])]
-                    return {
-                        "completions": completions,
-                        "model": result.get("model")
-                    }
+                    raise Exception("Only chat messages format is supported")
         except httpx.TimeoutException:
             logger.error(f"Request timeout for {self.hostname}")
             self.is_healthy = False
@@ -259,55 +213,7 @@ class CompletionServerManager:
         
         return None
     
-    def _build_prompt_from_trajectory(self, trajectory: Trajectory, instruction: str) -> str:
-        """Build a prompt from trajectory"""
-        if not trajectory.turns:
-            # For first step, use clear prompt structure that encourages code-only generation
-            return f"{instruction}\n\n{FORMAT_INSTRUCTIONS}"
-        
-        prompt_parts = [instruction, "\n\nConversation history:"]
-        
-        for turn in trajectory.turns:
-            prompt_parts.append(f"\nStep {turn.step}:")
-            prompt_parts.append(f"Request: {turn.prompt}")
-            if turn.code.strip():
-                prompt_parts.append(f"Code:\n```python\n{turn.code}\n```")
-            if turn.execution_output.strip():
-                status = "✓" if turn.execution_success else "✗"
-                prompt_parts.append(f"Execution {status}: {turn.execution_output}")
-        
-        prompt_parts.append(f"\n Continue generating code to achieve the original goal - {FORMAT_INSTRUCTIONS}")
-        
-        return "\n".join(prompt_parts)
     
-    async def generate_completion(self, request: GenerateCompletionRequest) -> GenerateCompletionResponse:
-        """Generate completion using available servers"""
-        server = self.get_available_server()
-        if not server:
-            raise HTTPException(status_code=503, detail="No available VLLM servers")
-        # Always expect the prompt to be fully constructed by the client
-        prompt = getattr(request, 'messages', None) or getattr(request, 'instruction', None)
-        try:
-            self.request_counter += 1
-            self.server_request_counts[server.hostname] += 1
-            result = await server.generate_completion(
-                prompt=prompt,
-                n=request.n,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                top_p=request.top_p,
-                frequency_penalty=request.frequency_penalty,
-                presence_penalty=request.presence_penalty,
-                stop=request.stop or ["```", "\nStep", "\nRequest:", "\nExecution"]
-            )
-            return GenerateCompletionResponse(
-                completions=result["completions"],
-                server_used=server.hostname,
-                model_used=result.get("model")
-            )
-        except Exception as e:
-            logger.error(f"Completion generation failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Completion generation failed: {str(e)}")
     
     async def update_all_models(self, model_path: str) -> Dict[str, bool]:
         """Update model on all servers sequentially to maintain availability"""
@@ -409,12 +315,6 @@ async def chat_completions(request: dict):
         logger.error(f"Chat completions failed: {e}")
         raise HTTPException(status_code=500, detail=f"Chat completions failed: {str(e)}")
 
-@app.post("/generate", response_model=GenerateCompletionResponse)
-async def generate_completion(request: GenerateCompletionRequest):
-    """Generate code completions from trajectory"""
-    if not completion_manager:
-        raise HTTPException(status_code=503, detail="Server not initialized")
-    return await completion_manager.generate_completion(request)
 
 @app.post("/update_model_params")
 async def update_model_params(request: UpdateModelRequest):

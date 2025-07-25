@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, Callable
 import httpx
 import asyncio
 import json
-import json
 import os
 from pathlib import Path
 import logging
@@ -47,6 +46,7 @@ MAX_TURNS = None
 TIMEOUT_SECONDS = None
 TRAJECTORY_OUTPUT_DIR = None
 TRAJECTORY_RUN_DIR: Optional[Path] = None  # created on first save
+PROMPTS_JSONL_PATH: Optional[Path] = None  # JSONL file for logging prompts
 
 # Ray execution engine configuration
 RAY_TIMEOUT_PER_STEP = 30.0
@@ -107,6 +107,28 @@ active_trajectories: Dict[str, Dict] = {}
 
 # HTTP client for external services
 http_client = httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
+
+def log_prompt_to_jsonl(request_data: dict):
+    """Log the exact prompt request to prompts.jsonl"""
+    if not PROMPTS_JSONL_PATH:
+        return
+    
+    try:
+        # Add timestamp to the request
+        log_entry = {
+            "timestamp": datetime.now().isoformat(),
+            **request_data
+        }
+        
+        # Ensure parent directory exists
+        PROMPTS_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Append to JSONL file
+        with open(PROMPTS_JSONL_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+            
+    except Exception as e:
+        logger.error(f"Failed to log prompt to JSONL: {e}")
 
 # Utility Functions
 def extract_python_code(text: str) -> str:
@@ -337,15 +359,22 @@ async def generate_single_trajectory(
                 # Add the current instruction as the next user message
                 current_content = f"<turn>\n<prompt>{saxutils.escape(current_instruction)}</prompt>\n</turn>\n{FORMAT_INSTRUCTIONS}"
                 messages.append({"role": "user", "content": current_content})
+                
+                # Prepare the request data for vLLM
+                request_data = {
+                    "messages": messages,
+                    "n": 1,
+                    "temperature": 0.8,
+                    "max_tokens": 512
+                }
+                
+                # Log the exact request to prompts.jsonl
+                log_prompt_to_jsonl(request_data)
+                
                 # Call the chat endpoint
                 response = await http_client.post(
                     f"{COMPLETION_SERVER_URL}/v1/chat/completions",
-                    json={
-                        "messages": messages,
-                        "n": 1,
-                        "temperature": 0.8,
-                        "max_tokens": 512
-                    }
+                    json=request_data
                 )
                 response.raise_for_status()
                 completion_result = response.json()
@@ -502,10 +531,9 @@ async def call_completion_server(prompt: str, num_completions: int = 4) -> List[
         
         # Always append markdown wrapping instruction
         response = await http_client.post(
-            f"{COMPLETION_SERVER_URL}/generate",
+            f"{COMPLETION_SERVER_URL}/v1/chat/completions",
             json={
-                "trajectory": trajectory,
-                "instruction": prompt,
+                "messages": trajectory,
                 "n": num_completions,
                 "temperature": 0.8,
                 "max_tokens": 512
@@ -623,6 +651,8 @@ def parse_args():
                        help="Number of GPUs per Ray actor")
     parser.add_argument("--trajectory-output-dir", default="/work/10450/sjoshi804/vista/astro_rl/trajectories",
                        help="Directory to save trajectory JSON files")
+    parser.add_argument("--prompts-jsonl-path", default="/work/10450/sjoshi804/vista/astro_rl/prompts.jsonl",
+                       help="Path to save prompts JSONL file")
     parser.add_argument("--host", default="0.0.0.0",
                        help="Host to bind the service")
     parser.add_argument("--port", type=int, default=8002,
@@ -640,6 +670,7 @@ if __name__ == "__main__":
     RAY_NUM_CPUS = args.ray_num_cpus
     RAY_NUM_GPUS = args.ray_num_gpus
     TRAJECTORY_OUTPUT_DIR = args.trajectory_output_dir
+    PROMPTS_JSONL_PATH = Path(args.prompts_jsonl_path)
     
     logger.info(f"Starting Code Generation & Execution Service with Ray")
     logger.info(f"Completion Server: {COMPLETION_SERVER_URL}")
@@ -650,6 +681,7 @@ if __name__ == "__main__":
     logger.info(f"Max Turns: {MAX_TURNS}")
     logger.info(f"Timeout: {TIMEOUT_SECONDS}s")
     logger.info(f"Trajectory Output Directory: {TRAJECTORY_OUTPUT_DIR}")
+    logger.info(f"Prompts JSONL Path: {PROMPTS_JSONL_PATH}")
     
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)
