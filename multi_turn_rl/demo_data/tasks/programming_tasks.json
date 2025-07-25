@@ -1,0 +1,38 @@
+{
+  "category": "programming",
+  "description": "Simple programming tasks that require multiple steps",
+  "tasks": [
+    {
+      "name": "fibonacci_sequence",
+      "prompt": "Create a function to calculate the nth Fibonacci number, test it with n=10, and then optimize it using memoization. Print 'FIBONACCI TEST PASSED' when both functions work correctly and show the optimization benefit.",
+      "completion_criteria": "test passed and optimized",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Start with basic recursive function, test it, then improve with memoization"
+    },
+    {
+      "name": "data_analysis_pipeline",
+      "prompt": "Create a list of 100 random numbers, calculate basic statistics (mean, median, std), and create a histogram visualization. Print 'VISUALIZATION COMPLETE' when the histogram is successfully created.",
+      "completion_criteria": "visualization complete",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Generate data -> analyze -> visualize"
+    },
+    {
+      "name": "file_processing",
+      "prompt": "Create a CSV file with sample data (name, age, city), read it back, and filter for people over 25. Print 'FILTERING COMPLETE' when you've successfully filtered and displayed the results.",
+      "completion_criteria": "filtering complete",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Write CSV -> read CSV -> process data"
+    },
+    {
+      "name": "web_data_fetch",
+      "prompt": "Make a simple HTTP request to get JSON data, parse it to extract specific fields, and save results to a file. Print 'DATA SAVED' when file is successfully written.",
+      "completion_criteria": "data saved",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Fetch -> parse -> save"
+    }
+  ]
+}

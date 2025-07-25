@@ -162,7 +162,8 @@ Generate Python code to accomplish this task. Make sure to:
                         {
                             "initial_prompts": [formatted_task],
                             "max_turns": max_turns,
-                            "completion_criteria": completion_criteria
+                            "completion_criteria": completion_criteria,
+                            "task_names": [task_name] if isinstance(task, dict) else None
                         }
                     ]
                 }
@@ -392,86 +393,6 @@ Generate Python code to accomplish this task. Make sure to:
         
         print("="*70)
     
-    def save_results(self, analysis: Dict[str, Any], filename: str = None, trajectory_dir: str = None):
-        """Save results to JSON file"""
-        
-        # Don't save results if service was never available
-        if not self._is_service_available():
-            logger.warning("Service was not available - skipping results save to prevent fake successful trajectories")
-            return
-        
-        # Don't save if no successful results
-        if analysis.get("successful_tasks", 0) == 0:
-            logger.warning("No successful tasks - skipping results save")
-            return
-        
-        if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"astronomy_generation_results_{timestamp}.json"
-        
-        # If trajectory directory is provided, save there
-        if trajectory_dir:
-            from pathlib import Path
-            trajectory_path = Path(trajectory_dir)
-            trajectory_path.mkdir(parents=True, exist_ok=True)
-            filename = trajectory_path / Path(filename).name
-        
-        try:
-            with open(filename, 'w') as f:
-                json.dump(analysis, f, indent=2, default=str)
-            logger.info(f"Results saved to {filename}")
-        except Exception as e:
-            logger.error(f"Failed to save results: {e}")
-    
-    def extract_final_code_snippets(self, results: List[Dict[str, Any]], output_file: str = None, trajectory_dir: str = None):
-        """Extract and save final working code snippets"""
-        
-        # Don't save code snippets if service was never available
-        if not self._is_service_available():
-            logger.warning("Service was not available - skipping code snippets save")
-            return
-        
-        # Check if there are any successful results
-        successful_results = [r for r in results if r.get("success", False) and r.get("trajectory")]
-        if not successful_results:
-            logger.warning("No successful results with code - skipping code snippets save")
-            return
-        
-        if output_file is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"astronomy_code_snippets_{timestamp}.py"
-        
-        # If trajectory directory is provided, save there
-        if trajectory_dir:
-            from pathlib import Path
-            trajectory_path = Path(trajectory_dir)
-            trajectory_path.mkdir(parents=True, exist_ok=True)
-            output_file = trajectory_path / Path(output_file).name
-        
-        try:
-            with open(output_file, 'w') as f:
-                f.write("# Generated Astronomy Data Visualization Code\n")
-                f.write(f"# Generated on: {datetime.now().isoformat()}\n")
-                f.write(f"# FITS file: {self.fits_file_path}\n\n")
-                
-                for i, result in enumerate(results, 1):
-                    if result["success"] and result["trajectory"]:
-                        f.write(f"# Task {i}: {result['task']}\n")
-                        f.write("# " + "="*60 + "\n\n")
-                        
-                        trajectory = result["trajectory"]
-                        for turn in trajectory["turns"]:
-                            if turn["code"] and turn["execution_success"]:
-                                f.write(f"# Step {turn['step']} - Working Code:\n")
-                                f.write(turn["code"])
-                                f.write("\n\n")
-                                f.write(f"# Execution Output: {turn['execution_output'][:200]}...\n\n")
-                        
-                        f.write("\n" + "#"*60 + "\n\n")
-            
-            logger.info(f"Code snippets saved to {output_file}")
-        except Exception as e:
-            logger.error(f"Failed to save code snippets: {e}")
 
 
 async def main():
@@ -480,6 +401,8 @@ async def main():
                        help="URL of the code generation service")
     parser.add_argument("--fits-file", required=True,
                        help="Path to the FITS file (Astro1 UV Imaging Telescope data)")
+    parser.add_argument("--run-id",
+                       help="Unique run identifier (used for organizing outputs)")
     parser.add_argument("--max-turns", type=int, default=8,
                        help="Maximum turns per trajectory")
     parser.add_argument("--timeout", type=int, default=900,
@@ -494,12 +417,6 @@ async def main():
                        help="Demo configuration to use (quick, standard, comprehensive, etc.)")
     parser.add_argument("--category",
                        help="Task category (programming, astronomy, math_science, interactive)")
-    parser.add_argument("--output-file",
-                       help="File to save results (default: auto-generated)")
-    parser.add_argument("--save-code", action="store_true",
-                       help="Save extracted working code snippets to a Python file")
-    parser.add_argument("--trajectory-dir", default="./trajectories",
-                       help="Directory to save all output files (default: ./trajectories)")
     
     args = parser.parse_args()
     
@@ -540,7 +457,7 @@ async def main():
     logger.info(f"FITS file: {args.fits_file}")
     logger.info(f"Max turns: {args.max_turns}")
     logger.info(f"Timeout: {args.timeout}s")
-    logger.info(f"Output directory: {args.trajectory_dir}")
+    logger.info("Trajectories will be saved by the orchestrator service")
     
     generator = AstronomyDataGenerator(args.service_url, args.fits_file, args.timeout)
     
@@ -586,12 +503,7 @@ async def main():
     
     generator.print_summary(analysis)
     
-    # Save results to trajectory directory (will be put in run-specific subdirectory)
-    generator.save_results(analysis, args.output_file, args.trajectory_dir)
-    
-    # Save working code snippets if requested, to trajectory directory
-    if args.save_code:
-        generator.extract_final_code_snippets(results, trajectory_dir=args.trajectory_dir)
+    # Note: Trajectories are now saved automatically by the orchestrator service
     
     # Show some example successful results
     successful_results = [r for r in results if r["success"] and r["trajectory"]]
@@ -616,25 +528,7 @@ async def main():
     successful_count = sum(1 for r in results if r["success"])
     print(f"\n🎯 Successfully generated code for {successful_count}/{len(tasks)} astronomy visualization tasks")
     
-    # Show file output locations
-    from pathlib import Path
-    trajectory_path = Path(args.trajectory_dir)
-    print(f"\n📁 All files saved to: {trajectory_path.absolute()}")
-    
-    # List files that were created
-    if trajectory_path.exists():
-        json_files = list(trajectory_path.glob("*.json"))
-        py_files = list(trajectory_path.glob("*.py"))
-        
-        if json_files:
-            print(f"   📊 JSON files: {len(json_files)}")
-            for json_file in json_files:
-                print(f"      - {json_file.name}")
-        
-        if py_files:
-            print(f"   🐍 Python files: {len(py_files)}")
-            for py_file in py_files:
-                print(f"      - {py_file.name}")
+    print(f"📝 Trajectories are being saved automatically by the orchestrator service")
     
     if successful_count > 0:
         print("\n✨ Generated code can be used for:")

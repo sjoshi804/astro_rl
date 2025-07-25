@@ -1,0 +1,22 @@
+{
+  "category": "astronomy",
+  "description": "Astronomy tasks (simplified versions)",
+  "tasks": [
+    {
+      "name": "fits_basic_analysis",
+      "prompt": "Load the FITS file from demo_data/astro1_uv_imaging_telescope.fits, display basic info, and create a simple grayscale plot. Print 'PLOT CREATED' when the visualization is successfully generated.",
+      "completion_criteria": "plot created",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 2,
+      "description": "Load FITS -> analyze -> visualize"
+    },
+    {
+      "name": "fits_advanced_analysis",
+      "prompt": "Load the FITS file from demo_data/astro1_uv_imaging_telescope.fits, calculate pixel statistics, and create a histogram of intensity values. Print 'HISTOGRAM COMPLETE' when the histogram is successfully created.",
+      "completion_criteria": "histogram complete",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Load -> calculate stats -> create histogram"
+    }
+  ]
+}
