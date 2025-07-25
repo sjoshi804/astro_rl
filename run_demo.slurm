@@ -10,7 +10,7 @@
 #SBATCH --time=2:00:00           # Max job run time (HH:MM:SS)
 #SBATCH --output=/work/10450/sjoshi804/vista/astro_rl/logs/astro_rl_data_gen_%j.out
 #SBATCH --error=/work/10450/sjoshi804/vista/astro_rl/logs/astro_rl_data_gen_%j.err   # Error log
-#SBATCH --partition=gh            # Partition name
+#SBATCH --partition=gh-dev            # Partition name
 #SBATCH --export=ALL
 
 ###################

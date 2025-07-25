@@ -146,54 +146,56 @@ MULTITURN_TEST_TASKS = [
         "completion_criteria": "optimization complete",
         "expected_steps": 4,
         "description": "Multi-turn iterative algorithm development and optimization"
-    },
-    
-    {
-        "name": "multiturn_data_exploration",
-        "prompt": "Begin by creating a dataset of 50 random numbers between 1-100. Analyze the initial dataset to find basic statistics. Then based on those results, create visualizations. Finally, generate a second dataset and compare the two. Each turn should build on findings from previous steps.",
-        "completion_criteria": "comparison complete",
-        "expected_steps": 4,
-        "description": "Multi-turn data analysis building on previous results"
-    },
-    
-    {
-        "name": "multiturn_debugging_journey",
-        "prompt": "Start with this intentionally buggy code: 'def divide_numbers(a, b): return a / b; result = divide_numbers(10, 0)'. Run it to see the error, then fix the error. After fixing, enhance the function with input validation, then add comprehensive error handling with custom messages.",
-        "completion_criteria": "debugging complete",
-        "expected_steps": 4,
-        "description": "Multi-turn debugging and enhancement process"
-    },
-    
-    {
-        "name": "multiturn_progressive_features",
-        "prompt": "Build a simple calculator step by step. Start with basic addition function and test it. Then add subtraction in the next turn. Then multiplication in the next turn. Finally, create a complete calculator interface that uses all functions. Each step must build on previous working code.",
-        "completion_criteria": "calculator complete",
-        "expected_steps": 4,
-        "description": "Multi-turn progressive feature development"
-    },
-    
-    {
-        "name": "multiturn_adaptive_analysis",
-        "prompt": "Create a function to analyze a list of numbers. Start with [1, 2, 3, 4, 5] and implement basic analysis (mean, sum). Run it and observe results. Then based on the output characteristics, add more sophisticated analysis (standard deviation, outliers). Finally, test with a different dataset [100, 2, 50, 1, 200] and adapt the analysis based on the new results.",
-        "completion_criteria": "adaptive analysis complete",
-        "expected_steps": 4,
-        "description": "Multi-turn adaptive data analysis based on execution feedback"
-    },
-    
-    {
-        "name": "multiturn_error_recovery",
-        "prompt": "Attempt to import a non-existent module 'fake_module' and handle the ImportError. Then try to access a non-existent file and handle the FileNotFoundError. Finally, create a robust function that handles multiple error types based on what you learned from the previous attempts.",
-        "completion_criteria": "error recovery complete",
-        "expected_steps": 3,
-        "description": "Multi-turn error handling and recovery learning"
-    },
-    {
-        "name": "multiturn_random_success",
-        "prompt": "Demonstrate a multi-step process: first print 'Step 1 complete', then print 'Step 2 complete', then print 'Step 3 complete'. Each step should be in a separate code cell. The task will randomly succeed with 50% probability on each turn, so it may require multiple turns to complete.",
-        "completion_criteria": "random success",
-        "expected_steps": 3,
-        "description": "Multi-turn test with random 50% success criterion for pipeline testing"
     }
+    
+    # ,
+    
+    # {
+    #     "name": "multiturn_data_exploration",
+    #     "prompt": "Begin by creating a dataset of 50 random numbers between 1-100. Analyze the initial dataset to find basic statistics. Then based on those results, create visualizations. Finally, generate a second dataset and compare the two. Each turn should build on findings from previous steps.",
+    #     "completion_criteria": "comparison complete",
+    #     "expected_steps": 4,
+    #     "description": "Multi-turn data analysis building on previous results"
+    # },
+    
+    # {
+    #     "name": "multiturn_debugging_journey",
+    #     "prompt": "Start with this intentionally buggy code: 'def divide_numbers(a, b): return a / b; result = divide_numbers(10, 0)'. Run it to see the error, then fix the error. After fixing, enhance the function with input validation, then add comprehensive error handling with custom messages.",
+    #     "completion_criteria": "debugging complete",
+    #     "expected_steps": 4,
+    #     "description": "Multi-turn debugging and enhancement process"
+    # },
+    
+    # {
+    #     "name": "multiturn_progressive_features",
+    #     "prompt": "Build a simple calculator step by step. Start with basic addition function and test it. Then add subtraction in the next turn. Then multiplication in the next turn. Finally, create a complete calculator interface that uses all functions. Each step must build on previous working code.",
+    #     "completion_criteria": "calculator complete",
+    #     "expected_steps": 4,
+    #     "description": "Multi-turn progressive feature development"
+    # },
+    
+    # {
+    #     "name": "multiturn_adaptive_analysis",
+    #     "prompt": "Create a function to analyze a list of numbers. Start with [1, 2, 3, 4, 5] and implement basic analysis (mean, sum). Run it and observe results. Then based on the output characteristics, add more sophisticated analysis (standard deviation, outliers). Finally, test with a different dataset [100, 2, 50, 1, 200] and adapt the analysis based on the new results.",
+    #     "completion_criteria": "adaptive analysis complete",
+    #     "expected_steps": 4,
+    #     "description": "Multi-turn adaptive data analysis based on execution feedback"
+    # },
+    
+    # {
+    #     "name": "multiturn_error_recovery",
+    #     "prompt": "Attempt to import a non-existent module 'fake_module' and handle the ImportError. Then try to access a non-existent file and handle the FileNotFoundError. Finally, create a robust function that handles multiple error types based on what you learned from the previous attempts.",
+    #     "completion_criteria": "error recovery complete",
+    #     "expected_steps": 3,
+    #     "description": "Multi-turn error handling and recovery learning"
+    # },
+    # {
+    #     "name": "multiturn_random_success",
+    #     "prompt": "Demonstrate a multi-step process: first print 'Step 1 complete', then print 'Step 2 complete', then print 'Step 3 complete'. Each step should be in a separate code cell. The task will randomly succeed with 50% probability on each turn, so it may require multiple turns to complete.",
+    #     "completion_criteria": "random success",
+    #     "expected_steps": 3,
+    #     "description": "Multi-turn test with random 50% success criterion for pipeline testing"
+    # }
 ]
 
 # All tasks combined
