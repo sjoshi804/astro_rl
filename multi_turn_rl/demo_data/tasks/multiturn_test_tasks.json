@@ -4,7 +4,7 @@
   "tasks": [
     {
       "name": "multiturn_iterative_optimization",
-      "prompt": "Start by implementing a simple bubble sort algorithm for the list [64, 34, 25, 12, 22, 11, 90]. First, implement basic bubble sort and test it. Then in subsequent steps, add timing measurements, optimize the algorithm, and finally compare performance. Each step should build on the previous execution results.",
+      "prompt": "Implement a simple bubble sort algorithm for the list [64, 34, 25, 12, 22, 11, 90]. First, implement basic bubble sort and test it. Then in subsequent steps, add timing measurements, optimize the algorithm, and finally compare performance. Each step should build on the previous execution results.",
       "completion_criteria": "optimization complete",
       "expected_steps": 4,
       "description": "Multi-turn iterative algorithm development and optimization",

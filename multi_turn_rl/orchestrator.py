@@ -23,6 +23,8 @@ FORMAT_INSTRUCTIONS = """
 Generate python code to solve the task.
 Return the code in markdown format code-blocks.
 Do not include any other text, only valid python code.
+Write only the code to implement the task - do not include if __name__ == '__main__' or any script structure.
+Just write the function definitions and the code that implements the task.
 """
 
 

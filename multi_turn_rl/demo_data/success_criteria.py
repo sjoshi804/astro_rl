@@ -226,34 +226,33 @@ def random_success_criterion_step_based(locals_dict: Dict[str, Any]) -> bool:
 
 # Map task names to their success criteria functions
 TASK_SUCCESS_CRITERIA = {
-    "fibonacci_sequence": fibonacci_success_criterion,
-    "data_analysis_pipeline": data_analysis_success_criterion, 
-    "file_processing": file_processing_success_criterion,
-    "fits_basic_analysis": fits_analysis_success_criterion,
-    "fits_advanced_analysis": fits_analysis_success_criterion,
-    "physics_projectile": physics_projectile_success_criterion,
+    "fibonacci_sequence": random_success_criterion_10_90,
+    "data_analysis_pipeline": random_success_criterion_10_90, 
+    "file_processing": random_success_criterion_10_90,
+    "fits_basic_analysis": random_success_criterion_10_90,
+    "fits_advanced_analysis": random_success_criterion_10_90,
+    "physics_projectile": random_success_criterion_10_90,
     
     # Output test criteria
-    "output_test_basic": output_test_basic_criterion,
-    "output_test_calculations": output_test_calculations_criterion,
-    "output_test_loops": output_test_loops_criterion,
-    "output_test_stderr": output_test_stderr_criterion,
-    "output_test_multiline": output_test_multiline_criterion,
+    "output_test_basic": random_success_criterion_10_90,
+    "output_test_calculations": random_success_criterion_10_90,
+    "output_test_loops": random_success_criterion_10_90,
+    "output_test_stderr": random_success_criterion_10_90,
+    "output_test_multiline": random_success_criterion_10_90,
     
     # Multi-turn test criteria
-    "multiturn_iterative_optimization": multiturn_iterative_optimization_criterion,
-    "multiturn_data_exploration": multiturn_data_exploration_criterion,
-    "multiturn_debugging_journey": multiturn_debugging_journey_criterion,
-    "multiturn_progressive_features": multiturn_progressive_features_criterion,
-    "multiturn_adaptive_analysis": multiturn_adaptive_analysis_criterion,
-    "multiturn_error_recovery": multiturn_error_recovery_criterion,
+    "multiturn_iterative_optimization": random_success_criterion_10_90,
+    "multiturn_data_exploration": random_success_criterion_10_90,
+    "multiturn_debugging_journey": random_success_criterion_10_90,
+    "multiturn_progressive_features": random_success_criterion_10_90,
+    "multiturn_adaptive_analysis": random_success_criterion_10_90,
+    "multiturn_error_recovery": random_success_criterion_10_90,
     
-    # Random criteria for other tasks
-    "web_data_fetch": random_success_criterion_70_30,
+    # All other tasks use 10_90 random criteria
+    "web_data_fetch": random_success_criterion_10_90,
     "statistics_experiment": random_success_criterion_10_90,
-    "number_guessing_game": random_success_criterion_step_based,
-    "text_adventure": random_success_criterion_70_30,
-    # Add mapping for the new multi-turn random success test
+    "number_guessing_game": random_success_criterion_10_90,
+    "text_adventure": random_success_criterion_10_90,
     "multiturn_random_success": random_success_criterion_10_90,
 }
 
