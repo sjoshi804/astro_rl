@@ -1,0 +1,46 @@
+{
+  "category": "output_tests",
+  "description": "Test tasks for output capture verification",
+  "tasks": [
+    {
+      "name": "output_test_basic",
+      "prompt": "Write Python code that explicitly generates output to STDOUT. Use print() statements to output 'Hello, World!' and the current timestamp. Make sure to print 'OUTPUT TEST COMPLETE' at the end. The goal is to test that our pipeline correctly captures standard output.",
+      "completion_criteria": "output test complete",
+      "expected_steps": 1,
+      "description": "Basic stdout capture test with explicit print statements",
+      "success_criterion": "random_success_criterion_10_90"
+    },
+    {
+      "name": "output_test_calculations",
+      "prompt": "Write Python code that generates verbose output to STDOUT showing step-by-step calculations. Calculate factorial of 5 and print each multiplication step (e.g., '1 * 1 = 1', '1 * 2 = 2', etc.). Print the final result and 'CALCULATION COMPLETE'. Use multiple print() statements to generate rich stdout output.",
+      "completion_criteria": "calculation complete",
+      "expected_steps": 2,
+      "description": "Verbose stdout output with step-by-step calculations",
+      "success_criterion": "random_success_criterion_10_90"
+    },
+    {
+      "name": "output_test_loops",
+      "prompt": "Write Python code that generates continuous output to STDOUT during loop execution. Create a loop from 1 to 10, printing each number and running total (e.g., 'Number: 1, Running total: 1'). After the loop, print a summary with the final sum. End with 'LOOP TEST FINISHED'. Focus on generating lots of stdout output.",
+      "completion_criteria": "loop test finished",
+      "expected_steps": 2,
+      "description": "Sequential stdout output during loop execution",
+      "success_criterion": "random_success_criterion_10_90"
+    },
+    {
+      "name": "output_test_stderr",
+      "prompt": "Write Python code that explicitly generates output to both STDOUT and STDERR. Import sys and use print('message', file=sys.stderr) to write to stderr, and regular print() for stdout. Create a try/except block that catches a division by zero error, prints the error to stderr, then prints success message to stdout. End with 'ERROR HANDLING COMPLETE' to stdout.",
+      "completion_criteria": "error handling complete",
+      "expected_steps": 2,
+      "description": "Test stderr and stdout separation with explicit sys.stderr usage",
+      "success_criterion": "random_success_criterion_10_90"
+    },
+    {
+      "name": "output_test_multiline",
+      "prompt": "Write Python code that generates multi-line output to STDOUT. Create a function that prints ASCII art (like a box made of '+', '-', '|' characters) line by line using multiple print() statements. Call the function, then print statistics about the pattern (number of lines, characters, etc.). End with 'PATTERN COMPLETE'. Focus on generating complex multi-line stdout output.",
+      "completion_criteria": "pattern complete",
+      "expected_steps": 2,
+      "description": "Multi-line stdout output with ASCII art patterns",
+      "success_criterion": "random_success_criterion_10_90"
+    }
+  ]
+}

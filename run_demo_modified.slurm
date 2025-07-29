@@ -4,7 +4,7 @@
 # SLURM Configuration 
 ###################
 #SBATCH --job-name=astro_rl_data_gen        # Job name 
-#SBATCH --nodes=5                  # Number of nodes
+#SBATCH --nodes=3                  # Number of nodes (2 VLLM servers + 1 orchestrator co-located)
 #SBATCH --ntasks-per-node=4       
 #SBATCH --cpus-per-task=4
 #SBATCH --time=2:00:00           # Max job run time (HH:MM:SS)
@@ -106,9 +106,9 @@ export LOG_LEVEL="INFO"
 
 # Get node hostnames
 NODES=($(scontrol show hostname $SLURM_JOB_NODELIST))
-VLLM_NODE_1=${NODES[0]}
-VLLM_NODE_2=${NODES[1]}
-ORCHESTRATOR_NODE=${NODES[2]}
+VLLM_NODE_1=${NODES[0]}  # First node: VLLM server + Orchestrator + Ray head
+VLLM_NODE_2=${NODES[1]}  # Second node: VLLM server only
+ORCHESTRATOR_NODE=${NODES[0]}  # Orchestrator runs on same node as first VLLM server
 
 # Construct service URLs
 export VLLM_SERVER_1_URL="http://${VLLM_NODE_1}:${VLLM_SERVER_PORT_1}"
@@ -120,9 +120,8 @@ echo "RL ASTRONOMY PIPELINE JOB STARTING"
 echo "==================================================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Nodes allocated: ${NODES[@]}"
-echo "VLLM Node 1: $VLLM_NODE_1 (port $VLLM_SERVER_PORT_1)"
+echo "VLLM Node 1 + Orchestrator + Ray Head: $VLLM_NODE_1 (ports $VLLM_SERVER_PORT_1, $ORCHESTRATOR_SERVICE_PORT)"
 echo "VLLM Node 2: $VLLM_NODE_2 (port $VLLM_SERVER_PORT_2)"
-echo "Orchestrator Node: $ORCHESTRATOR_NODE (port $ORCHESTRATOR_SERVICE_PORT)"
 echo "Ray Cluster: All ${SLURM_JOB_NUM_NODES} nodes (head: ${NODES[0]})"
 echo "Model: $MODEL_PATH"
 echo "FITS File: $FITS_FILE_PATH"
@@ -180,12 +179,12 @@ cleanup_services() {
 trap cleanup_services EXIT
 
 # =============================================================================
-# START VLLM SERVERS (NODES 0 AND 1)
+# START VLLM SERVERS
 # =============================================================================
 
 echo "Starting VLLM servers..."
 
-# Start VLLM Wrapper on Node 1
+# Start VLLM Wrapper on Node 1 (will also host orchestrator and Ray head)
 srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_1 \
     multi-turn-rl-vllm \
     --run-id "$RUN_ID" \
@@ -224,7 +223,7 @@ echo "Setting up Ray cluster..."
 # Determine GPUs per node (if SLURM provides this info; default to 1)
 gpus_per_node=${SLURM_GPUS_PER_NODE:-1}
 
-# Get the head node (first node)
+# Get the head node (first node - same as VLLM_NODE_1)
 head_node=${NODES[0]}
 echo "Ray head node: $head_node"
 
@@ -311,10 +310,10 @@ echo "✓ VLLM servers are ready!"
 echo "✓ Ray cluster is running with ${SLURM_JOB_NUM_NODES} nodes"
 
 # =============================================================================
-# START ORCHESTRATOR SERVICE (NODE 3)
+# START ORCHESTRATOR SERVICE (SAME NODE AS FIRST VLLM SERVER)
 # =============================================================================
 
-echo "Starting Orchestrator Service (combined completion load balancer + orchestrator)..."
+echo "Starting Orchestrator Service on same node as first VLLM server..."
 
 srun --nodes=1 --ntasks=1 --nodelist=$ORCHESTRATOR_NODE \
     multi-turn-rl-orchestrator \
@@ -348,7 +347,7 @@ fi
 echo "✓ Orchestrator Service is ready!"
 
 # =============================================================================
-# RUN DATA GENERATION (NODE 3)
+# RUN DATA GENERATION (SAME NODE AS ORCHESTRATOR)
 # =============================================================================
 
 echo "Starting Data Generation..."
@@ -365,7 +364,7 @@ DATA_GEN_ARGS=(
 echo "Running demo with configuration: $DEMO_CONFIG"
 echo "Data generator arguments: ${DATA_GEN_ARGS[@]}"
 
-# Run data generation
+# Run data generation on same node as orchestrator
 srun --nodes=1 --ntasks=1 --nodelist=$ORCHESTRATOR_NODE \
     python astro_data_generator.py "${DATA_GEN_ARGS[@]}" \
     > $RUN_LOGS_DIR/data_generator.out \
@@ -431,4 +430,4 @@ echo "  Data Generator: $RUN_LOGS_DIR/data_generator.out/.err"
 echo "==================================================================="
 
 # Exit with data generation exit code
-exit $DATA_GEN_EXIT_CODE
+exit $DATA_GEN_EXIT_CODE 

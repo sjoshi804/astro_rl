@@ -1,16 +1,100 @@
-#!/bin/bash
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+# Demo configurations
+DEMO_CONFIGS = [
+    ("quick", "Fast 2-task demo (~3 min)"),
+    ("standard", "Balanced 4-task demo (~8 min)"),
+    ("comprehensive", "Full 8-task demo (~15 min)"),
+    ("astronomy_focused", "FITS analysis tasks (~10 min)"),
+    ("programming_focused", "Programming tasks (~10 min)"),
+    ("output_tests", "Output capture tests (~5 min)"),
+    ("multiturn_tests", "Multi-turn interaction tests (~8 min)")
+]
+
+DEFAULT_PARTITION = "gh-dev"
+DEFAULT_JOB_TIME = "02:00:00"
+
+
+def prompt_int(prompt, minval, maxval):
+    while True:
+        try:
+            val = int(input(prompt))
+            if minval <= val <= maxval:
+                return val
+            print(f"Please enter a number between {minval} and {maxval}.")
+        except ValueError:
+            print("Please enter a valid integer.")
+
+def prompt_choice(prompt, choices):
+    for i, (key, desc) in enumerate(choices, 1):
+        print(f"  {i}) {key:20} - {desc}")
+    while True:
+        val = input(prompt).strip()
+        if val.isdigit() and 1 <= int(val) <= len(choices):
+            return choices[int(val)-1][0]
+        for key, _ in choices:
+            if val == key:
+                return key
+        print("Please enter a valid number or config name.")
+
+def prompt_str(prompt, default=None, validator=None):
+    while True:
+        val = input(prompt + (f" [{default}]" if default else "") + ": ").strip()
+        if not val and default is not None:
+            return default
+        if validator is None or validator(val):
+            return val
+        print("Invalid input.")
+
+def generate_slurm_script(num_vllm, demo_config, job_time, partition, script_name):
+    vllm_ports = [str(8200 + i) for i in range(num_vllm)]
+    vllm_nodes = [f"VLLM_NODE_{i+1}=${{NODES[{i}]}}" for i in range(num_vllm)]
+    vllm_ports_exports = [f"export VLLM_SERVER_PORT_{i+1}=\"{port}\"" for i, port in enumerate(vllm_ports)]
+    vllm_urls_exports = [
+        f"export VLLM_SERVER_{i+1}_URL=\"http://${{VLLM_NODE_{i+1}}}:${{VLLM_SERVER_PORT_{i+1}}}\""
+        for i in range(num_vllm)
+    ]
+    vllm_start_cmds = []
+    vllm_health_cmds = []
+    vllm_status_cmds = []
+    vllm_log_cmds = []
+    for i in range(num_vllm):
+        idx = i+1
+        vllm_start_cmds.append(f"""
+# Start VLLM Wrapper on Node {idx}{' (will also host orchestrator and Ray head)' if i==0 else ''}
+srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_{idx} \
+    multi-turn-rl-vllm \
+    --run-id \"$RUN_ID\" \
+    --service-id \"vllm-node{idx}\" \
+    --model-path \"$MODEL_PATH\" \
+    --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
+    --port $VLLM_SERVER_PORT_{idx} \
+    --host 0.0.0.0 \
+    > $RUN_LOGS_DIR/vllm_wrapper_node{idx}.out \
+    2> $RUN_LOGS_DIR/vllm_wrapper_node{idx}.err &
+VLLM_PID_{idx}=$!")
+        vllm_health_cmds.append(f'wait_for_service "$VLLM_SERVER_{idx}_URL" "VLLM Server {idx}" || exit 1')
+        vllm_status_cmds.append(f'echo "  VLLM Server {idx} (PID $VLLM_PID_{idx}): $(ps -p $VLLM_PID_{idx} > /dev/null && echo \'Running\' || echo \'Stopped\')"')
+        vllm_log_cmds.append(f'echo "  VLLM Wrapper Node {idx}: $RUN_LOGS_DIR/vllm_wrapper_node{idx}.out/.err"')
+    vllm_server_urls = ' '.join([f'"$VLLM_SERVER_{i+1}_URL"' for i in range(num_vllm)])
+
+    script = f'''#!/bin/bash
 
 ###################
 # SLURM Configuration 
 ###################
-#SBATCH --job-name=astro_rl_data_gen        # Job name 
-#SBATCH --nodes=5                  # Number of nodes
-#SBATCH --ntasks-per-node=4       
+#SBATCH --job-name=astro_rl_data_gen
+#SBATCH --nodes={num_vllm}
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=4
-#SBATCH --time=2:00:00           # Max job run time (HH:MM:SS)
+#SBATCH --time={job_time}
 #SBATCH --output=/work/10450/sjoshi804/vista/astro_rl/logs/astro_rl_data_gen_%j.out
-#SBATCH --error=/work/10450/sjoshi804/vista/astro_rl/logs/astro_rl_data_gen_%j.err   # Error log
-#SBATCH --partition=gh-dev            # Partition name
+#SBATCH --error=/work/10450/sjoshi804/vista/astro_rl/logs/astro_rl_data_gen_%j.err
+#SBATCH --partition={partition}
 #SBATCH --export=ALL
 
 ###################
@@ -51,7 +135,7 @@ cd ..
 
 # Load modules
 echo "Loading modules..."
-module load gcc/15 
+module load gcc/15
 module load gcc/15 cuda/12.8 nccl/12.4
 module list
 
@@ -60,8 +144,7 @@ export MODEL_PATH="Qwen/Qwen2.5-Coder-7B-Instruct"
 export FITS_FILE_PATH="/work/10450/sjoshi804/vista/astro_rl/multi_turn_rl/demo_data/astro1_uv_imaging_telescope.fits"
 
 # Service Ports (adjust if needed to avoid conflicts)
-export VLLM_SERVER_PORT_1="8200"
-export VLLM_SERVER_PORT_2="8201"
+{chr(10).join(vllm_ports_exports)}
 export ORCHESTRATOR_SERVICE_PORT="8000"
 
 # Service Configuration
@@ -77,7 +160,7 @@ export CONDA_ENV="astro_rl"
 # DEMO CONFIGURATION - CHANGE THIS TO SELECT DEMO TYPE
 # =============================================================================
 # Available configs: quick, standard, comprehensive, astronomy_focused, programming_focused, output_tests, multiturn_tests
-export DEMO_CONFIG="multiturn_tests"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
+export DEMO_CONFIG="{demo_config}"  # <-- CHANGE THIS LINE TO SELECT DEMO TYPE
 
 # Run ID and Directory Configuration
 export RUN_ID="$SLURM_JOB_ID"
@@ -106,46 +189,39 @@ export LOG_LEVEL="INFO"
 
 # Get node hostnames
 NODES=($(scontrol show hostname $SLURM_JOB_NODELIST))
-VLLM_NODE_1=${NODES[0]}
-VLLM_NODE_2=${NODES[1]}
-ORCHESTRATOR_NODE=${NODES[2]}
+{chr(10).join(vllm_nodes)}
+ORCHESTRATOR_NODE=${{NODES[0]}}  # Orchestrator runs on same node as first VLLM server
 
 # Construct service URLs
-export VLLM_SERVER_1_URL="http://${VLLM_NODE_1}:${VLLM_SERVER_PORT_1}"
-export VLLM_SERVER_2_URL="http://${VLLM_NODE_2}:${VLLM_SERVER_PORT_2}"
-export ORCHESTRATOR_SERVICE_URL="http://${ORCHESTRATOR_NODE}:${ORCHESTRATOR_SERVICE_PORT}"
+{chr(10).join(vllm_urls_exports)}
+export ORCHESTRATOR_SERVICE_URL="http://${{ORCHESTRATOR_NODE}}:${{ORCHESTRATOR_SERVICE_PORT}}"
 
 echo "==================================================================="
 echo "RL ASTRONOMY PIPELINE JOB STARTING"
 echo "==================================================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Nodes allocated: ${NODES[@]}"
-echo "VLLM Node 1: $VLLM_NODE_1 (port $VLLM_SERVER_PORT_1)"
-echo "VLLM Node 2: $VLLM_NODE_2 (port $VLLM_SERVER_PORT_2)"
-echo "Orchestrator Node: $ORCHESTRATOR_NODE (port $ORCHESTRATOR_SERVICE_PORT)"
-echo "Ray Cluster: All ${SLURM_JOB_NUM_NODES} nodes (head: ${NODES[0]})"
+echo "VLLM Node 1 + Orchestrator + Ray Head: $VLLM_NODE_1 (ports $VLLM_SERVER_PORT_1, $ORCHESTRATOR_SERVICE_PORT)"
+"""
+for i in range(1, num_vllm):
+    script += f'echo "VLLM Node {i+1}: $VLLM_NODE_{i+1} (port $VLLM_SERVER_PORT_{i+1})"\n'
+script += '''echo "Ray Cluster: All $SLURM_JOB_NUM_NODES nodes (head: ${NODES[0]})"
 echo "Model: $MODEL_PATH"
 echo "FITS File: $FITS_FILE_PATH"
 echo "Demo Configuration: $DEMO_CONFIG"
 echo "Conda Environment: $CONDA_ENV"
 echo "==================================================================="
 
-# Create necessary directories
 mkdir -p $BASE_LOGS_DIR
 mkdir -p $RUN_LOGS_DIR
 mkdir -p $BASE_TRAJECTORY_DIR
 mkdir -p $RUN_TRAJECTORY_DIR
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
 
 wait_for_service() {
     local url=$1
     local service_name=$2
     local max_attempts=120
     local attempt=1
-    
     echo "Waiting for $service_name at $url..."
     while [ $attempt -le $max_attempts ]; do
         if curl -s -f "$url/health" > /dev/null 2>&1; then
@@ -156,7 +232,6 @@ wait_for_service() {
         sleep 5
         ((attempt++))
     done
-    
     echo "✗ $service_name failed to start after $((max_attempts * 5)) seconds"
     return 1
 }
@@ -165,73 +240,26 @@ cleanup_services() {
     echo "Cleaning up services..."
     pkill -f "run_vllm_wrapper.py" || true
     pkill -f "run_orchestrator_service.py" || true
-    
-    # Clean up Ray cluster
     echo "Stopping Ray cluster..."
     for node in "${NODES[@]}"; do
         echo "Stopping Ray on node: $node"
         srun --nodes=1 --ntasks=1 -w "$node" ray stop --force > /dev/null 2>&1 || true
     done
-    
     sleep 5
 }
-
-# Set up cleanup trap
 trap cleanup_services EXIT
 
-# =============================================================================
-# START VLLM SERVERS (NODES 0 AND 1)
-# =============================================================================
-
 echo "Starting VLLM servers..."
-
-# Start VLLM Wrapper on Node 1
-srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_1 \
-    multi-turn-rl-vllm \
-    --run-id "$RUN_ID" \
-    --service-id "vllm-node1" \
-    --model-path "$MODEL_PATH" \
-    --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
-    --port $VLLM_SERVER_PORT_1 \
-    --host 0.0.0.0 \
-    > $RUN_LOGS_DIR/vllm_wrapper_node1.out \
-    2> $RUN_LOGS_DIR/vllm_wrapper_node1.err &
-
-VLLM_PID_1=$!
-
-# Start VLLM Wrapper on Node 2
-srun --nodes=1 --ntasks=1 --nodelist=$VLLM_NODE_2 \
-    multi-turn-rl-vllm \
-    --run-id "$RUN_ID" \
-    --service-id "vllm-node2" \
-    --model-path "$MODEL_PATH" \
-    --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
-    --port $VLLM_SERVER_PORT_2 \
-    --host 0.0.0.0 \
-    > $RUN_LOGS_DIR/vllm_wrapper_node2.out \
-    2> $RUN_LOGS_DIR/vllm_wrapper_node2.err &
-
-VLLM_PID_2=$!
-
-echo "VLLM servers starting (PIDs: $VLLM_PID_1, $VLLM_PID_2)..."
-
-# =============================================================================
-# START RAY CLUSTER (ALL NODES)
-# =============================================================================
+'''
+script += '\n'.join(vllm_start_cmds)
+script += '''
+echo "VLLM servers starting..."
 
 echo "Setting up Ray cluster..."
-
-# Determine GPUs per node (if SLURM provides this info; default to 1)
 gpus_per_node=${SLURM_GPUS_PER_NODE:-1}
-
-# Get the head node (first node)
 head_node=${NODES[0]}
 echo "Ray head node: $head_node"
-
-# Get head node IP
 head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
-
-# Handle potential IPv6 addresses
 if [[ "$head_node_ip" == *" "* ]]; then  
     IFS=' ' read -ra ADDR <<<"$head_node_ip"
     if [[ ${#ADDR[0]} -gt 16 ]]; then
@@ -241,13 +269,10 @@ if [[ "$head_node_ip" == *" "* ]]; then
     fi
     echo "Detected multiple IPs, using: $head_node_ip"
 fi
-
 ray_port=6379
 ip_head=$head_node_ip:$ray_port
 export ip_head
 echo "Ray Head Node Address: $ip_head"
-
-# Cleanup previous Ray instances on all nodes
 echo "Cleaning up previous Ray instances..."
 for node in "${NODES[@]}"; do
     echo "Stopping Ray on node: $node"
@@ -255,22 +280,16 @@ for node in "${NODES[@]}"; do
     srun --nodes=1 --ntasks=1 -w "$node" rm -rf /tmp/ray/* > /dev/null 2>&1 || true
 done
 sleep 2
-
-# Start the head node
 echo "Starting Ray head node on $head_node..."
 srun --nodes=1 --ntasks=1 -w "$head_node" \
     ray start --head --node-ip-address="$head_node_ip" --port=$ray_port \
     --num-cpus=72 --num-gpus=$gpus_per_node --block \
     > $RUN_LOGS_DIR/ray_head.out \
     2> $RUN_LOGS_DIR/ray_head.err &
-
 RAY_HEAD_PID=$!
-sleep 10  # Give head node time to initialize
-
-# Start worker nodes (if we have more than 1 node)
+sleep 10
 worker_num=$((SLURM_JOB_NUM_NODES - 1))
 RAY_WORKER_PIDS=()
-
 if [ $worker_num -gt 0 ]; then
     echo "Starting $worker_num Ray worker nodes..."
     for ((i = 1; i <= worker_num; i++)); do
@@ -281,45 +300,33 @@ if [ $worker_num -gt 0 ]; then
             --num-cpus=72 --num-gpus=$gpus_per_node --block \
             > $RUN_LOGS_DIR/ray_worker_$i.out \
             2> $RUN_LOGS_DIR/ray_worker_$i.err &
-        
         RAY_WORKER_PIDS+=($!)
         sleep 5
     done
 fi
-
 echo "Waiting for Ray cluster to stabilize..."
 sleep 10
-
-# Check Ray cluster status
 echo "Ray cluster status:"
 srun --nodes=1 --ntasks=1 -w "$head_node" ray status || echo "Ray status check failed"
-
 echo "Ray cluster setup complete!"
-
-# =============================================================================
-# WAIT FOR CORE SERVICES TO BE READY
-# =============================================================================
-
 echo "Waiting for core services to start up..."
 sleep $STARTUP_WAIT_TIME
-
-# Wait for VLLM servers
-wait_for_service "$VLLM_SERVER_1_URL" "VLLM Server 1" || exit 1
-wait_for_service "$VLLM_SERVER_2_URL" "VLLM Server 2" || exit 1
-
+'''
+script += '\n'.join(vllm_health_cmds)
+script += '''
 echo "✓ VLLM servers are ready!"
-echo "✓ Ray cluster is running with ${SLURM_JOB_NUM_NODES} nodes"
-
-# =============================================================================
-# START ORCHESTRATOR SERVICE (NODE 3)
-# =============================================================================
-
-echo "Starting Orchestrator Service (combined completion load balancer + orchestrator)..."
-
+echo "✓ Ray cluster is running with $SLURM_JOB_NUM_NODES nodes"
+echo "Starting Orchestrator Service on same node as first VLLM server..."
+VLLM_SERVER_URLS=(
+'''
+for i in range(num_vllm):
+    script += f'    "$VLLM_SERVER_{i+1}_URL"\n'
+script += '''
+)
 srun --nodes=1 --ntasks=1 --nodelist=$ORCHESTRATOR_NODE \
     multi-turn-rl-orchestrator \
     --run-id "$RUN_ID" \
-    --vllm-servers "$VLLM_SERVER_1_URL" "$VLLM_SERVER_2_URL" \
+    --vllm-servers "${VLLM_SERVER_URLS[@]}" \
     --host 0.0.0.0 \
     --port $ORCHESTRATOR_SERVICE_PORT \
     --max-turns $MAX_TURNS \
@@ -331,12 +338,8 @@ srun --nodes=1 --ntasks=1 --nodelist=$ORCHESTRATOR_NODE \
     --max-retries 3 \
     > $RUN_LOGS_DIR/orchestrator_service.out \
     2> $RUN_LOGS_DIR/orchestrator_service.err &
-
 ORCHESTRATOR_PID=$!
-
 echo "Orchestrator Service starting (PID: $ORCHESTRATOR_PID)..."
-
-# Wait for service to be ready
 sleep 20
 if ! wait_for_service "$ORCHESTRATOR_SERVICE_URL" "Orchestrator Service"; then
     echo "✗ CRITICAL: Orchestrator Service failed to start!"
@@ -344,57 +347,32 @@ if ! wait_for_service "$ORCHESTRATOR_SERVICE_URL" "Orchestrator Service"; then
     echo "✗ Check logs/${SLURM_JOB_ID}/orchestrator_service.err for details."
     exit 1
 fi
-
 echo "✓ Orchestrator Service is ready!"
-
-# =============================================================================
-# RUN DATA GENERATION (NODE 3)
-# =============================================================================
-
 echo "Starting Data Generation..."
-
-# Construct data generator arguments using demo configuration
 DATA_GEN_ARGS=(
     --service-url "$ORCHESTRATOR_SERVICE_URL"
     --fits-file "$FITS_FILE_PATH"
     --config "$DEMO_CONFIG"
     --run-id "$RUN_ID"
 )
-
-
 echo "Running demo with configuration: $DEMO_CONFIG"
 echo "Data generator arguments: ${DATA_GEN_ARGS[@]}"
-
-# Run data generation
 srun --nodes=1 --ntasks=1 --nodelist=$ORCHESTRATOR_NODE \
     python astro_data_generator.py "${DATA_GEN_ARGS[@]}" \
     > $RUN_LOGS_DIR/data_generator.out \
     2> $RUN_LOGS_DIR/data_generator.err
-
 DATA_GEN_EXIT_CODE=$?
-
-# =============================================================================
-# RESULTS AND CLEANUP
-# =============================================================================
-
 echo "==================================================================="
 echo "DATA GENERATION COMPLETED"
 echo "==================================================================="
-
 if [ $DATA_GEN_EXIT_CODE -eq 0 ]; then
     echo "✓ Data generation completed successfully!"
-    
-    # Display results summary
     echo "Demo configuration used: $DEMO_CONFIG"
     echo "Run ID: $RUN_ID"
-    
-    # Check for prompts JSONL file
     PROMPTS_FILE="$RUN_TRAJECTORY_DIR/prompts.jsonl"
     if [ -f "$PROMPTS_FILE" ]; then
         echo "Prompts JSONL saved to: $PROMPTS_FILE"
     fi
-    
-    # Count generated trajectory files
     if [ -d "$RUN_TRAJECTORY_DIR" ]; then
         TRAJECTORY_COUNT=$(find "$RUN_TRAJECTORY_DIR" -name "trajectory_*.json" | wc -l)
         TOTAL_FILES=$(find "$RUN_TRAJECTORY_DIR" -type f | wc -l)
@@ -403,32 +381,53 @@ if [ $DATA_GEN_EXIT_CODE -eq 0 ]; then
         echo "Run trajectory directory: $RUN_TRAJECTORY_DIR"
         echo "Run logs directory: $RUN_LOGS_DIR"
     fi
-    
 else
     echo "✗ Data generation failed with exit code: $DATA_GEN_EXIT_CODE"
 fi
-
-# Display service status
 echo ""
 echo "Service Status:"
-echo "  VLLM Server 1 (PID $VLLM_PID_1): $(ps -p $VLLM_PID_1 > /dev/null && echo 'Running' || echo 'Stopped')"
-echo "  VLLM Server 2 (PID $VLLM_PID_2): $(ps -p $VLLM_PID_2 > /dev/null && echo 'Running' || echo 'Stopped')"
+'''
+script += '\n'.join(vllm_status_cmds)
+script += '''
 echo "  Ray Head Node (PID $RAY_HEAD_PID): $(ps -p $RAY_HEAD_PID > /dev/null && echo 'Running' || echo 'Stopped')"
 echo "  Ray Worker Nodes: ${#RAY_WORKER_PIDS[@]} workers"
 echo "  Orchestrator Service (PID $ORCHESTRATOR_PID): $(ps -p $ORCHESTRATOR_PID > /dev/null && echo 'Running' || echo 'Stopped')"
-
 echo ""
 echo "Job completed. Log files:"
-echo "  Main SLURM job stdout: astro_rl_data_gen_${RUN_ID}.out"
-echo "  Main SLURM job stderr: astro_rl_data_gen_${RUN_ID}.err"
-echo "  Run logs directory: $RUN_LOGS_DIR/"
-echo "  VLLM Wrapper Node 1: $RUN_LOGS_DIR/vllm_wrapper_node1.out/.err"
-echo "  VLLM Wrapper Node 2: $RUN_LOGS_DIR/vllm_wrapper_node2.out/.err"
+'''
+script += '\n'.join(vllm_log_cmds)
+script += '''
 echo "  Ray Head Node: $RUN_LOGS_DIR/ray_head.out/.err"
 echo "  Ray Worker Nodes: $RUN_LOGS_DIR/ray_worker_*.out/.err"
 echo "  Orchestrator Service: $RUN_LOGS_DIR/orchestrator_service.out/.err"
 echo "  Data Generator: $RUN_LOGS_DIR/data_generator.out/.err"
 echo "==================================================================="
-
-# Exit with data generation exit code
 exit $DATA_GEN_EXIT_CODE
+'''
+    Path(script_name).write_text(script)
+    os.chmod(script_name, 0o755)
+    print(f"\nGenerated SLURM script: {script_name}")
+    return script_name
+
+def main():
+    print("\n==== RL Astronomy Pipeline Interactive Launcher ====")
+    num_vllm = prompt_int("Enter number of VLLM servers (1-8): ", 1, 8)
+    print("\nSelect demo configuration:")
+    demo_config = prompt_choice("Enter number or name: ", DEMO_CONFIGS)
+    job_time = prompt_str("Enter job time limit (HH:MM:SS)", DEFAULT_JOB_TIME, lambda s: len(s.split(':'))==3 and all(x.isdigit() for x in s.split(':')))
+    partition = prompt_str("Enter SLURM partition", DEFAULT_PARTITION)
+    script_name = f"run_demo_{num_vllm}_servers.slurm"
+    generate_slurm_script(num_vllm, demo_config, job_time, partition, script_name)
+    submit = prompt_str("Submit job now? (y/N)", "N", lambda s: s.lower() in ("y","n","yes","no","") )
+    if submit.lower().startswith('y'):
+        print(f"Submitting job with: sbatch {script_name}")
+        try:
+            out = subprocess.check_output(["sbatch", script_name], stderr=subprocess.STDOUT)
+            print(out.decode())
+        except Exception as e:
+            print(f"Error submitting job: {e}")
+    else:
+        print(f"You can submit the job manually with: sbatch {script_name}")
+
+if __name__ == "__main__":
+    main() 

@@ -1,0 +1,22 @@
+{
+  "category": "math_science",
+  "description": "Math/Science tasks that build on each other",
+  "tasks": [
+    {
+      "name": "physics_projectile",
+      "prompt": "Calculate the trajectory of a projectile with initial velocity 50 m/s at 45 degrees, plot the path, and find the maximum height. Print 'MAXIMUM HEIGHT FOUND: X meters' where X is the calculated maximum height.",
+      "completion_criteria": "maximum height found",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Calculate trajectory -> plot -> find maximum"
+    },
+    {
+      "name": "statistics_experiment",
+      "prompt": "Generate two datasets from different distributions, perform a t-test to compare them, and visualize the results. Print 'TEST COMPLETE' when statistical test is done and results are visualized.",
+      "completion_criteria": "test complete",
+      "success_criterion": "random_success_criterion_10_90",
+      "expected_steps": 3,
+      "description": "Generate data -> run test -> visualize"
+    }
+  ]
+}

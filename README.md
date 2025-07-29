@@ -24,7 +24,7 @@
 ### 1. Interactive Code Generation & Evaluation Service
 **Components:**
 - **Completion Server** (VLLM serving latest model weights)
-- **Code Execution Engine** (sandboxed runtime environment)
+- **Ray Execution Engine** (distributed Ray-based runtime environment)
 
 ### 2. Policy Training Module
 **Component:**
@@ -158,3 +158,13 @@ trajectory = {
 
 - start_instance(timeout_in_secs, num_cpus, num_gpus) -> return id
 - exec(id: str, code: str, success_criterion: func) -> { state: "running/crashed/completed/max_steps_exceeded", "execution_output": "str"}
+
+
+# Next Steps 
+
+- Clean up API contracts
+= Figure out what breaks when you have multiple tasks 
+- Improve prompt formatting and saving
+- Reduce number of nodes for services
+- Get working with 1 astro viz bench example
+

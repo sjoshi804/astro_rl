@@ -16,29 +16,25 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Astronomy data visualization tasks for FITS files
-ASTRONOMY_TASKS = [
-    "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",
+# Import demo tasks from organized demo_data
+try:
+    from multi_turn_rl.demo_data.task_loader import TaskLoader
+    from multi_turn_rl.demo_data.demo_config import get_demo_config, list_available_configs
     
-#    "Create a simple grayscale visualization of the UV image with proper axis labels and a colorbar",
+    # Initialize task loader
+    task_loader = TaskLoader()
+    ALL_DEMO_TASKS = task_loader.get_all_tasks()
+    get_tasks_by_category = task_loader.get_tasks_by_category
+    get_simple_tasks = lambda: task_loader.get_quick_tasks()
     
-#    "Generate a histogram of pixel intensity values to understand the brightness distribution in the UV image"
-    
-#     "Apply different color maps (viridis, plasma, hot) to the image and display them side by side for comparison",
-    
-#     "Find and highlight the brightest regions in the image by creating a binary mask for pixels above the 95th percentile",
-    
-#     "Calculate and display basic statistics (mean, median, standard deviation) of pixel values in different regions of the image",
-    
-#     "Create a contour plot overlay on the original image to show intensity levels and structure",
-    
-#     "Implement a simple background subtraction by subtracting the median value and show before/after images",
-    
-#     "Create a radial profile plot showing how brightness varies with distance from the image center",
-    
-#     "Generate a 3D surface plot of a central region (e.g., 100x100 pixels) to visualize the intensity landscape"
-# 
-]
+    DEMO_TASKS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Demo tasks import failed: {e}")
+    # Fallback to original astronomy tasks if demo_data not available
+    ASTRONOMY_TASKS = [
+        "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",
+    ]
+    DEMO_TASKS_AVAILABLE = False
 
 class AstronomyDataGenerator:
     """Generates astronomy data visualization tasks for the Code Generation & Execution Service"""
@@ -50,9 +46,24 @@ class AstronomyDataGenerator:
         self.results = []
         self.start_time = None
         
-    def _format_task_with_context(self, task: str) -> str:
-        """Format task with FITS file context and common imports"""
-        context = f"""
+    def _format_task_with_context(self, task, task_info=None) -> str:
+        """Format task with context and imports"""
+        # Handle both string tasks and task dictionaries
+        if isinstance(task, dict):
+            task_prompt = task.get("prompt", task.get("name", str(task)))
+            task_info = task
+        else:
+            task_prompt = task
+        
+        # Check if this is an astronomy task
+        is_astronomy_task = (
+            "fits" in task_prompt.lower() or 
+            "astronomy" in task_prompt.lower() or
+            (task_info and "astronomy" in task_info.get("name", "").lower())
+        )
+        
+        if is_astronomy_task:
+            context = f"""
 You are working with an astronomy FITS file located at: {self.fits_file_path}
 
 This is an Astro1 Ultraviolet Imaging Telescope image with dimensions 512 x 512 pixels.
@@ -64,7 +75,7 @@ Common imports you might need:
 - from astropy.visualization import ZScaleInterval, ImageNormalize
 - from astropy.stats import sigma_clipped_stats
 
-Task: {task}
+Task: {task_prompt}
 
 Generate Python code to accomplish this task. Make sure to:
 1. Handle the FITS file properly
@@ -72,6 +83,18 @@ Generate Python code to accomplish this task. Make sure to:
 3. Create clear, labeled visualizations when applicable
 4. Add informative print statements for any calculated values
 """
+        else:
+            context = f"""
+Task: {task_prompt}
+
+Generate Python code to accomplish this task. Make sure to:
+1. Include appropriate imports
+2. Add proper error handling
+3. Include informative print statements
+4. Create clear outputs when applicable
+5. Test your implementation
+"""
+        
         return context.strip()
     
     async def test_service_health(self) -> bool:
@@ -89,6 +112,10 @@ Generate Python code to accomplish this task. Make sure to:
             logger.error(f"✗ Failed to connect to service: {e}")
             return False
     
+    def _is_service_available(self) -> bool:
+        """Check if service was verified as available during initialization"""
+        return hasattr(self, '_service_verified') and self._service_verified
+    
     async def get_service_config(self) -> Dict[str, Any]:
         """Get service configuration"""
         try:
@@ -105,12 +132,36 @@ Generate Python code to accomplish this task. Make sure to:
             logger.warning(f"Failed to get service config: {e}")
             return {}
     
-    async def generate_single_task(self, task: str, max_turns: int = 8) -> Dict[str, Any]:
-        """Generate code for a single astronomy task"""
+    async def generate_single_task(self, task, max_turns: int = 8) -> Dict[str, Any]:
+        """Generate a single task - accepts string or task dict"""
         test_start = time.time()
-        formatted_task = self._format_task_with_context(task)
         
-        logger.info(f"Generating code for: {task[:60]}...")
+        # Handle both string tasks and task dictionaries
+        if isinstance(task, dict):
+            task_name = task.get("name", "unknown_task")
+            task_prompt = task.get("prompt", task.get("name", str(task)))
+            completion_criteria = task.get("completion_criteria", "task complete")
+        else:
+            task_name = task
+            task_prompt = task
+            completion_criteria = "visualization complete"
+        
+        formatted_task = self._format_task_with_context(task_prompt, task if isinstance(task, dict) else None)
+        
+        logger.info(f"Generating code for: {task_name}")
+        
+        # Check if service is available before attempting generation
+        if not self._is_service_available():
+            logger.error(f"✗ Service not available - cannot generate task: {task_name}")
+            return {
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
+                "formatted_prompt": formatted_task,
+                "success": False,
+                "duration_seconds": time.time() - test_start,
+                "trajectory": None,
+                "error": "Code execution service is not available"
+            }
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -119,7 +170,8 @@ Generate Python code to accomplish this task. Make sure to:
                         {
                             "initial_prompts": [formatted_task],
                             "max_turns": max_turns,
-                            "completion_criteria": "visualization complete"
+                            "completion_criteria": completion_criteria,
+                            "task_names": [task_name] if isinstance(task, dict) else None
                         }
                     ]
                 }
@@ -136,7 +188,8 @@ Generate Python code to accomplish this task. Make sure to:
                     trajectory = trajectories[0] if trajectories else None
                     
                     result = {
-                        "task": task,
+                        "task": task_name,
+                        "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                         "formatted_prompt": formatted_task,
                         "success": True,
                         "duration_seconds": test_duration,
@@ -163,7 +216,8 @@ Generate Python code to accomplish this task. Make sure to:
                 else:
                     logger.error(f"✗ Request failed: {response.status_code} - {response.text}")
                     return {
-                        "task": task,
+                        "task": task_name,
+                        "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                         "formatted_prompt": formatted_task,
                         "success": False,
                         "duration_seconds": test_duration,
@@ -174,7 +228,8 @@ Generate Python code to accomplish this task. Make sure to:
         except asyncio.TimeoutError:
             logger.error(f"✗ Request timed out after {self.timeout}s")
             return {
-                "task": task,
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                 "formatted_prompt": formatted_task,
                 "success": False,
                 "duration_seconds": self.timeout,
@@ -185,7 +240,8 @@ Generate Python code to accomplish this task. Make sure to:
             test_duration = time.time() - test_start
             logger.error(f"✗ Request failed: {e}")
             return {
-                "task": task,
+                "task": task_name,
+                "task_info": task if isinstance(task, dict) else {"name": task, "prompt": task},
                 "formatted_prompt": formatted_task,
                 "success": False,
                 "duration_seconds": test_duration,
@@ -345,63 +401,6 @@ Generate Python code to accomplish this task. Make sure to:
         
         print("="*70)
     
-    def save_results(self, analysis: Dict[str, Any], filename: str = None, trajectory_dir: str = None):
-        """Save results to JSON file"""
-        if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"astronomy_generation_results_{timestamp}.json"
-        
-        # If trajectory directory is provided, save there
-        if trajectory_dir:
-            from pathlib import Path
-            trajectory_path = Path(trajectory_dir)
-            trajectory_path.mkdir(parents=True, exist_ok=True)
-            filename = trajectory_path / Path(filename).name
-        
-        try:
-            with open(filename, 'w') as f:
-                json.dump(analysis, f, indent=2, default=str)
-            logger.info(f"Results saved to {filename}")
-        except Exception as e:
-            logger.error(f"Failed to save results: {e}")
-    
-    def extract_final_code_snippets(self, results: List[Dict[str, Any]], output_file: str = None, trajectory_dir: str = None):
-        """Extract and save final working code snippets"""
-        if output_file is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"astronomy_code_snippets_{timestamp}.py"
-        
-        # If trajectory directory is provided, save there
-        if trajectory_dir:
-            from pathlib import Path
-            trajectory_path = Path(trajectory_dir)
-            trajectory_path.mkdir(parents=True, exist_ok=True)
-            output_file = trajectory_path / Path(output_file).name
-        
-        try:
-            with open(output_file, 'w') as f:
-                f.write("# Generated Astronomy Data Visualization Code\n")
-                f.write(f"# Generated on: {datetime.now().isoformat()}\n")
-                f.write(f"# FITS file: {self.fits_file_path}\n\n")
-                
-                for i, result in enumerate(results, 1):
-                    if result["success"] and result["trajectory"]:
-                        f.write(f"# Task {i}: {result['task']}\n")
-                        f.write("# " + "="*60 + "\n\n")
-                        
-                        trajectory = result["trajectory"]
-                        for turn in trajectory["turns"]:
-                            if turn["code"] and turn["execution_success"]:
-                                f.write(f"# Step {turn['step']} - Working Code:\n")
-                                f.write(turn["code"])
-                                f.write("\n\n")
-                                f.write(f"# Execution Output: {turn['execution_output'][:200]}...\n\n")
-                        
-                        f.write("\n" + "#"*60 + "\n\n")
-            
-            logger.info(f"Code snippets saved to {output_file}")
-        except Exception as e:
-            logger.error(f"Failed to save code snippets: {e}")
 
 
 async def main():
@@ -410,6 +409,8 @@ async def main():
                        help="URL of the code generation service")
     parser.add_argument("--fits-file", required=True,
                        help="Path to the FITS file (Astro1 UV Imaging Telescope data)")
+    parser.add_argument("--run-id",
+                       help="Unique run identifier (used for organizing outputs)")
     parser.add_argument("--max-turns", type=int, default=8,
                        help="Maximum turns per trajectory")
     parser.add_argument("--timeout", type=int, default=900,
@@ -419,25 +420,52 @@ async def main():
     parser.add_argument("--concurrency", type=int, default=2,
                        help="Number of concurrent requests (if --concurrent)")
     parser.add_argument("--tasks", nargs="*",
-                       help="Custom tasks to process (overrides default astronomy tasks)")
-    parser.add_argument("--output-file",
-                       help="File to save results (default: auto-generated)")
-    parser.add_argument("--save-code", action="store_true",
-                       help="Save extracted working code snippets to a Python file")
-    parser.add_argument("--trajectory-dir", default="./trajectories",
-                       help="Directory to save all output files (default: ./trajectories)")
+                       help="Custom task names to process (overrides defaults)")
+    parser.add_argument("--config", 
+                       help="Demo configuration to use (quick, standard, comprehensive, etc.)")
+    parser.add_argument("--category",
+                       help="Task category (programming, astronomy, math_science, interactive)")
     
     args = parser.parse_args()
     
-    # Use custom tasks or default astronomy dataset
-    tasks = args.tasks if args.tasks else ASTRONOMY_TASKS
+    # Determine which tasks to run
+    if args.config and DEMO_TASKS_AVAILABLE:
+        # Use demo configuration
+        demo_config = get_demo_config(args.config)
+        task_names = demo_config["tasks"]
+        tasks = [task for task in ALL_DEMO_TASKS if task["name"] in task_names]
+        args.max_turns = demo_config["max_turns"]
+        args.timeout = demo_config["timeout_seconds"]
+        if demo_config.get("concurrent"):
+            args.concurrent = True
+            args.concurrency = demo_config.get("concurrency", 2)
+        logger.info(f"Using demo config '{args.config}' with {len(tasks)} tasks")
+    elif args.category and DEMO_TASKS_AVAILABLE:
+        # Use task category
+        tasks = get_tasks_by_category(args.category)
+        logger.info(f"Using {len(tasks)} tasks from category '{args.category}'")
+    elif args.tasks and DEMO_TASKS_AVAILABLE:
+        # Use specific task names
+        tasks = [task for task in ALL_DEMO_TASKS if task["name"] in args.tasks]
+        if not tasks:
+            # Fallback to treating as string prompts
+            tasks = args.tasks
+        logger.info(f"Using {len(tasks)} specified tasks")
+    elif DEMO_TASKS_AVAILABLE:
+        # Default to simple demo tasks
+        tasks = get_simple_tasks()
+        logger.info("Using simple demo tasks from demo_data/")
+    else:
+        # Fallback to original astronomy tasks or string prompts
+        tasks = args.tasks if args.tasks else ASTRONOMY_TASKS
+        logger.info(f"Using fallback tasks: {len(tasks)} items")
     
     logger.info(f"Starting astronomy data generation with {len(tasks)} tasks")
     logger.info(f"Service URL: {args.service_url}")
     logger.info(f"FITS file: {args.fits_file}")
     logger.info(f"Max turns: {args.max_turns}")
     logger.info(f"Timeout: {args.timeout}s")
-    logger.info(f"Output directory: {args.trajectory_dir}")
+    logger.info("Trajectories will be saved by the orchestrator service")
     
     generator = AstronomyDataGenerator(args.service_url, args.fits_file, args.timeout)
     
@@ -445,6 +473,9 @@ async def main():
     if not await generator.test_service_health():
         logger.error("Service health check failed. Exiting.")
         return
+    
+    # Mark service as verified and available
+    generator._service_verified = True
     
     # Get service config
     config = await generator.get_service_config()
@@ -480,12 +511,7 @@ async def main():
     
     generator.print_summary(analysis)
     
-    # Save results to trajectory directory
-    generator.save_results(analysis, args.output_file, args.trajectory_dir)
-    
-    # Save working code snippets if requested, to trajectory directory
-    if args.save_code:
-        generator.extract_final_code_snippets(results, trajectory_dir=args.trajectory_dir)
+    # Note: Trajectories are now saved automatically by the orchestrator service
     
     # Show some example successful results
     successful_results = [r for r in results if r["success"] and r["trajectory"]]
@@ -510,25 +536,7 @@ async def main():
     successful_count = sum(1 for r in results if r["success"])
     print(f"\n🎯 Successfully generated code for {successful_count}/{len(tasks)} astronomy visualization tasks")
     
-    # Show file output locations
-    from pathlib import Path
-    trajectory_path = Path(args.trajectory_dir)
-    print(f"\n📁 All files saved to: {trajectory_path.absolute()}")
-    
-    # List files that were created
-    if trajectory_path.exists():
-        json_files = list(trajectory_path.glob("*.json"))
-        py_files = list(trajectory_path.glob("*.py"))
-        
-        if json_files:
-            print(f"   📊 JSON files: {len(json_files)}")
-            for json_file in json_files:
-                print(f"      - {json_file.name}")
-        
-        if py_files:
-            print(f"   🐍 Python files: {len(py_files)}")
-            for py_file in py_files:
-                print(f"      - {py_file.name}")
+    print(f"📝 Trajectories are being saved automatically by the orchestrator service")
     
     if successful_count > 0:
         print("\n✨ Generated code can be used for:")

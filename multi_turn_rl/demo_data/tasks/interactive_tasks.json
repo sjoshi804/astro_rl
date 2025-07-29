@@ -1,0 +1,22 @@
+{
+  "category": "interactive",
+  "description": "Game/Interactive tasks",
+  "tasks": [
+    {
+      "name": "number_guessing_game",
+      "prompt": "Create a number guessing game where the computer picks a random number 1-100, simulate a few guesses, and track the results. Print 'GAME COMPLETE' when you've implemented and tested the game logic.",
+      "completion_criteria": "game complete",
+      "expected_steps": 3,
+      "description": "Setup game -> simulate guesses -> track results",
+      "success_criterion": "random_success_criterion_10_90"
+    },
+    {
+      "name": "text_adventure",
+      "prompt": "Create a simple text adventure with rooms, items, and basic commands. Implement at least 3 rooms and test navigation. Print 'NAVIGATION TESTED' when room transitions work correctly.",
+      "completion_criteria": "navigation tested",
+      "expected_steps": 4,
+      "description": "Create structure -> add rooms -> add commands -> test",
+      "success_criterion": "random_success_criterion_10_90"
+    }
+  ]
+}

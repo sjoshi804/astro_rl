@@ -1,0 +1,152 @@
+{
+  "description": "Success criteria mappings for demo tasks",
+  "criteria": {
+    "fibonacci_sequence": {
+      "type": "function_check",
+      "required_functions": ["fibonacci", "fibonacci_memo"],
+      "test_input": 5,
+      "expected_output": 5,
+      "description": "Check if both fibonacci functions are defined and return correct result"
+    },
+    "data_analysis_pipeline": {
+      "type": "variable_check",
+      "required_variables": ["random_numbers", "mean", "median", "std"],
+      "data_size_check": {
+        "variable": "random_numbers",
+        "expected_length": 100
+      },
+      "description": "Check if data analysis was completed with histogram"
+    },
+    "file_processing": {
+      "type": "variable_check",
+      "required_variables": ["filtered_data"],
+      "min_length_check": {
+        "variable": "filtered_data",
+        "min_length": 1
+      },
+      "description": "Check if CSV processing was completed"
+    },
+    "fits_basic_analysis": {
+      "type": "data_shape_check",
+      "required_variables": ["data", "header"],
+      "shape_check": {
+        "variable": "data",
+        "expected_shape": [512, 512]
+      },
+      "description": "Check if FITS file was loaded and analyzed"
+    },
+    "fits_advanced_analysis": {
+      "type": "data_shape_check",
+      "required_variables": ["data", "header"],
+      "shape_check": {
+        "variable": "data",
+        "expected_shape": [512, 512]
+      },
+      "description": "Check if FITS file was loaded and analyzed"
+    },
+    "physics_projectile": {
+      "type": "any_variable_check",
+      "possible_variables": ["t", "x", "y", "max_height", "trajectory"],
+      "description": "Check if projectile physics calculation was completed"
+    },
+    "output_test_basic": {
+      "type": "always_true",
+      "description": "Basic output test - success determined by output capture"
+    },
+    "output_test_calculations": {
+      "type": "any_variable_check",
+      "possible_variables": ["factorial", "result", "fact"],
+      "description": "Check if factorial calculation was completed"
+    },
+    "output_test_loops": {
+      "type": "any_variable_check",
+      "possible_variables": ["sum", "total", "i", "numbers"],
+      "description": "Check if loop test was completed"
+    },
+    "output_test_stderr": {
+      "type": "import_or_error_check",
+      "required_imports": ["sys"],
+      "description": "Check if stderr/stdout test was completed"
+    },
+    "output_test_multiline": {
+      "type": "any_variable_check",
+      "possible_variables": ["pattern", "lines", "art", "box", "triangle"],
+      "description": "Check if multiline pattern test was completed"
+    },
+    "multiturn_iterative_optimization": {
+      "type": "multi_variable_check",
+      "variable_groups": {
+        "sorting": ["bubble_sort", "sort_function", "sort"],
+        "timing": ["time", "timing", "elapsed", "duration"]
+      },
+      "requires_all_groups": true,
+      "description": "Check if iterative optimization has progressed"
+    },
+    "multiturn_data_exploration": {
+      "type": "multi_variable_check",
+      "variable_groups": {
+        "data": ["dataset", "data", "numbers", "random_data"],
+        "analysis": ["mean", "std", "statistics", "analysis"],
+        "visualization": ["plot", "plt", "matplotlib", "chart"]
+      },
+      "min_groups_required": 2,
+      "description": "Check if data exploration has progressed through multiple steps"
+    },
+    "multiturn_debugging_journey": {
+      "type": "keyword_and_variable_check",
+      "keyword_checks": ["divide"],
+      "variable_groups": {
+        "error_handling": ["try", "except", "error"],
+        "validation": ["validate", "check", "validation"]
+      },
+      "requires_keyword_and_group": true,
+      "description": "Check if debugging process has progressed"
+    },
+    "multiturn_progressive_features": {
+      "type": "function_count_check",
+      "function_keywords": ["add", "subtract", "multiply", "calculator"],
+      "min_function_count": 2,
+      "description": "Check if progressive features have been built"
+    },
+    "multiturn_adaptive_analysis": {
+      "type": "analysis_function_check",
+      "function_keyword": "analyz",
+      "analysis_types": ["mean", "std", "outlier", "standard_deviation", "variance"],
+      "min_analysis_count": 2,
+      "description": "Check if adaptive analysis has evolved"
+    },
+    "multiturn_error_recovery": {
+      "type": "error_handling_count_check",
+      "error_keywords": ["error", "exception", "try", "except", "importerror", "filenotfounderror"],
+      "min_error_handling_count": 3,
+      "description": "Check if error recovery strategies have been developed"
+    },
+    "web_data_fetch": {
+      "type": "random",
+      "success_rate": 0.7,
+      "description": "Random 70% success rate for demo purposes"
+    },
+    "statistics_experiment": {
+      "type": "random", 
+      "success_rate": 0.1,
+      "description": "Random 10% success rate for demo purposes"
+    },
+    "number_guessing_game": {
+      "type": "step_based_random",
+      "base_rate": 0.1,
+      "step_multiplier": 0.1,
+      "max_rate": 0.9,
+      "description": "Success rate increases with more variables defined"
+    },
+    "text_adventure": {
+      "type": "random",
+      "success_rate": 0.7,
+      "description": "Random 70% success rate for demo purposes"
+    },
+    "multiturn_random_success": {
+      "type": "random",
+      "success_rate": 0.1,
+      "description": "Random 10% success rate for demo purposes"
+    }
+  }
+}

@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi_turn_rl"
+version = "0.1.0"
+description = "A reinforcement learning framework for multi-turn code generation and execution"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Siddharth Joshi"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "fastapi>=0.68.0",
+    "uvicorn>=0.15.0",
+    "pydantic>=1.8.0",
+    "httpx>=0.24.0",
+    "ray>=2.0.0",
+    "typing-extensions>=4.0.0",
+    "vllm>=0.2.0",
+    "torch>=1.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-asyncio>=0.18.0",
+    "black>=22.0.0",
+    "isort>=5.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.910",
+]
+
+[project.scripts]
+multi-turn-rl = "multi_turn_rl.main:main"
+multi-turn-rl-orchestrator = "multi_turn_rl.scripts.run_orchestrator_service:main"
+multi-turn-rl-vllm = "multi_turn_rl.scripts.run_vllm_wrapper:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.fits", "*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
