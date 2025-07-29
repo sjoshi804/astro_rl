@@ -40,7 +40,8 @@ class Orchestrator:
         prompts_jsonl_path: Optional[str] = None,
         ray_timeout_per_step: float = 30.0,
         ray_num_cpus: int = 1,
-        ray_num_gpus: int = 0
+        ray_num_gpus: int = 0,
+        debug_mode: bool = True
     ):
         self.completion_load_balancer = completion_load_balancer
         self.max_turns = max_turns
@@ -53,6 +54,9 @@ class Orchestrator:
         self.ray_timeout_per_step = ray_timeout_per_step
         self.ray_num_cpus = ray_num_cpus
         self.ray_num_gpus = ray_num_gpus
+        
+        # Debug configuration
+        self.debug_mode = debug_mode
         
         # Initialize execution engine
         self.execution_engine = RayExecutionEngine()
@@ -73,14 +77,15 @@ class Orchestrator:
             pass
     
     def log_prompt_to_jsonl(self, request_data: dict):
-        """Log the exact prompt request to prompts.jsonl"""
+        """Log the exact prompt request to prompts.jsonl and prompts.txt"""
         if not self.prompts_jsonl_path:
             return
         
         try:
             # Add timestamp to the request
+            timestamp = datetime.now()
             log_entry = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": timestamp.isoformat(),
                 **request_data
             }
             
@@ -90,9 +95,34 @@ class Orchestrator:
             # Append to JSONL file
             with open(self.prompts_jsonl_path, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+            
+            # Also write to TXT file with timestamp if debug mode is enabled
+            if self.debug_mode:
+                txt_path = self.prompts_jsonl_path.with_suffix('.txt')
+                with open(txt_path, 'a', encoding='utf-8') as f:
+                    f.write(f"\n{'='*80}\n")
+                    f.write(f"TIMESTAMP: {timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}\n")
+                    f.write(f"{'='*80}\n\n")
+                    
+                    # Write messages in a readable format
+                    messages = request_data.get('messages', [])
+                    for i, message in enumerate(messages):
+                        role = message.get('role', 'unknown')
+                        content = message.get('content', '')
+                        f.write(f"Message {i+1} ({role.upper()}):\n")
+                        f.write(f"{'-'*40}\n")
+                        f.write(f"{content}\n")
+                        f.write(f"{'-'*40}\n\n")
+                    
+                    # Write other request parameters
+                    for key, value in request_data.items():
+                        if key != 'messages':
+                            f.write(f"{key}: {value}\n")
+                    
+                    f.write(f"\n{'='*80}\n\n")
                 
         except Exception as e:
-            logger.error(f"Failed to log prompt to JSONL: {e}")
+            logger.error(f"Failed to log prompt to JSONL/TXT: {e}")
     
     def format_trajectory_for_chat(self, original_goal: str, trajectory_turns: List[Turn]) -> str:
         """
@@ -540,7 +570,8 @@ class Orchestrator:
             "ray_num_cpus": self.ray_num_cpus,
             "ray_num_gpus": self.ray_num_gpus,
             "trajectory_output_dir": str(self.trajectory_output_dir) if self.trajectory_output_dir else None,
-            "saved_trajectories": trajectory_count
+            "saved_trajectories": trajectory_count,
+            "debug_mode": self.debug_mode
         }
     
     def shutdown(self):
