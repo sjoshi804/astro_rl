@@ -15,6 +15,7 @@ class Turn(BaseModel):
     execution_success: bool
     timestamp: datetime
     success_criterion_met: Optional[bool] = False
+    raw_model_output: Optional[str] = None
 
 
 class Trajectory(BaseModel):
