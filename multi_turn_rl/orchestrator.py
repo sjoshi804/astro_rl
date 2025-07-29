@@ -77,27 +77,19 @@ class Orchestrator:
         except ImportError:
             pass
     
-    def log_prompt_to_jsonl(self, request_data: dict):
-        """Log the exact prompt request to prompts.jsonl and prompts.txt"""
+    def log_prompt_to_txt(self, request_data: dict):
+        """Log the exact prompt request to prompts.txt"""
         if not self.prompts_jsonl_path:
             return
         
         try:
             # Add timestamp to the request
             timestamp = datetime.now()
-            log_entry = {
-                "timestamp": timestamp.isoformat(),
-                **request_data
-            }
             
             # Ensure parent directory exists
             self.prompts_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Append to JSONL file
-            with open(self.prompts_jsonl_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
-            
-            # Also write to TXT file with timestamp if debug mode is enabled
+            # Write to TXT file with timestamp if debug mode is enabled
             if self.debug_mode:
                 txt_path = self.prompts_jsonl_path.with_suffix('.txt')
                 with open(txt_path, 'a', encoding='utf-8') as f:
@@ -123,7 +115,7 @@ class Orchestrator:
                     f.write(f"\n{'='*80}\n\n")
                 
         except Exception as e:
-            logger.error(f"Failed to log prompt to JSONL/TXT: {e}")
+            logger.error(f"Failed to log prompt to TXT: {e}")
     
     def format_trajectory_for_chat(self, original_goal: str, trajectory_turns: List[Turn]) -> str:
         """
@@ -417,8 +409,8 @@ class Orchestrator:
                         "max_tokens": 512
                     }
                     
-                    # Log the exact request to prompts.jsonl
-                    self.log_prompt_to_jsonl(request_data)
+                    # Log the exact request to prompts.txt
+                    self.log_prompt_to_txt(request_data)
                     
                     # Call the completion load balancer directly
                     completion_result = await self.completion_load_balancer.chat_completions(request_data)

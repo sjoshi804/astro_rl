@@ -287,7 +287,58 @@ class VLLMWrapper:
                 
         except Exception as e:
             logger.error(f"Generation error: {e}")
-            raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
+            
+            # Handle specific error types
+            error_message = str(e)
+            if "maximum model length" in error_message or "longer than the maximum model length" in error_message:
+                error_content = "prompt exceeds max context length, please try with a shorter prompt"
+            else:
+                error_content = error_message
+            
+            # Return error as a valid model response instead of crashing
+            if isinstance(request.prompt, str):
+                # Single prompt
+                return {
+                    "id": f"gen-{int(time.time() * 1000)}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": self.model_path,
+                    "choices": [
+                        {
+                            "text": f"Generation Error: {error_content}",
+                            "index": 0,
+                            "logprobs": None,
+                            "finish_reason": "error",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    }
+                }
+            else:
+                # Multiple prompts - return error for each
+                return {
+                    "id": f"gen-{int(time.time() * 1000)}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": self.model_path,
+                    "choices": [
+                        {
+                            "text": f"Generation Error: {error_content}",
+                            "index": i,
+                            "logprobs": None,
+                            "finish_reason": "error",
+                        }
+                        for i in range(len(request.prompt))
+                    ],
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    }
+                }
 
     async def chat_completions_endpoint(self, request: ChatCompletionRequest):
         """OpenAI-compatible chat completions endpoint"""
@@ -352,7 +403,38 @@ class VLLMWrapper:
             
         except Exception as e:
             logger.error(f"Chat completion error: {e}")
-            raise HTTPException(status_code=500, detail=f"Chat completion failed: {str(e)}")
+            
+            # Handle specific error types
+            error_message = str(e)
+            if "maximum model length" in error_message or "longer than the maximum model length" in error_message:
+                error_content = "prompt exceeds max context length, please try with a shorter prompt"
+            else:
+                error_content = error_message
+            
+            # Return error as a valid model response instead of crashing
+            response = {
+                "id": f"chatcmpl-{int(time.time() * 1000)}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": request.model or self.model_path,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": f"Generation Error: {error_content}",
+                        },
+                        "finish_reason": "error",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                }
+            }
+            
+            return response
 
     async def completions_endpoint(self, request: GenerateRequest):
         """OpenAI-compatible completions endpoint"""
