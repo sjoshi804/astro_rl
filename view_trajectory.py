@@ -46,15 +46,13 @@ def format_trajectory_chat(trajectory: Dict[str, Any]) -> str:
         code = turn.get("code", "")
         formatted += f"<turn>\n{code}\n</turn>\n"
         
-        # Add execution output if present
+        # Add execution output or error based on success status
         execution_output = turn.get("execution_output", "")
         if execution_output and execution_output.strip():
-            formatted += f"<output>\n{execution_output}\n</output>\n"
-        
-        # Add error output if execution failed
-        if not turn.get("execution_success", True):
-            error_msg = turn.get("execution_output", "Execution failed")
-            formatted += f"<error>\n{error_msg}\n</error>\n"
+            if turn.get("execution_success", True):
+                formatted += f"<output>\n{execution_output}\n</output>\n"
+            else:
+                formatted += f"<error>\n{execution_output}\n</error>\n"
         
         formatted += "\n"
     

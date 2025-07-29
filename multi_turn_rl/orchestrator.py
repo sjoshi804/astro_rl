@@ -136,9 +136,12 @@ class Orchestrator:
             # Add the turn with code
             formatted_content += f"<turn>\n{turn.code}\n</turn>\n"
             
-            # Add execution output if present
+            # Add execution output or error based on success status
             if turn.execution_output and turn.execution_output.strip():
-                formatted_content += f"{turn.execution_output}\n"
+                if turn.execution_success:
+                    formatted_content += f"<output>\n{turn.execution_output}\n</output>\n"
+                else:
+                    formatted_content += f"<error>\n{turn.execution_output}\n</error>\n"
             
             formatted_content += "\n"
         
