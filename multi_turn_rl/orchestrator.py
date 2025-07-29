@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 FORMAT_INSTRUCTIONS = """
 Generate python code to solve the task.
-Return the code in the following format in markdown format code-blocks.
+Return the code in markdown format code-blocks.
+Do not include any other text, only valid python code.
 """
 
 
@@ -238,6 +239,7 @@ class Orchestrator:
                         "execution_output": turn.execution_output,
                         "execution_success": turn.execution_success,
                         "success_criteria_met": getattr(turn, 'success_criterion_met', False),
+                        "raw_model_output": getattr(turn, 'raw_model_output', None),
                         "timestamp": turn.timestamp.isoformat()
                     }
                     for turn in trajectory.turns
@@ -472,6 +474,9 @@ class Orchestrator:
                         execution_success=execution_result.get("state") == "success",
                         timestamp=datetime.now()
                     )
+                    
+                    # Store the raw model output for debugging/analysis
+                    turn.raw_model_output = raw_code
                     
                     # Add success criterion result to turn object for completion checking
                     turn.success_criterion_met = execution_result.get("success_criterion_met", False)
