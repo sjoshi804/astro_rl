@@ -89,12 +89,25 @@ def create_orchestrator_service(args) -> FastAPI:
     logger.info(f"Prompts JSONL path: {prompts_jsonl_path}")
     logger.info(f"Logs directory: {run_logs_dir}")
     
+    # Extract hostnames from full URLs for completion load balancer
+    vllm_hostnames = []
+    for url in args.vllm_servers:
+        if url.startswith('http://'):
+            hostname = url[7:]  # Remove 'http://' prefix
+        elif url.startswith('https://'):
+            hostname = url[8:]  # Remove 'https://' prefix  
+        else:
+            hostname = url  # Assume it's already just hostname:port
+        vllm_hostnames.append(hostname)
+    
+    logger.info(f"VLLM server URLs: {args.vllm_servers}")
+    logger.info(f"VLLM hostnames for load balancer: {vllm_hostnames}")
+    
     # Create completion load balancer
     completion_load_balancer = CompletionLoadBalancer(
-        vllm_servers=args.vllm_servers,
-        strategy=args.load_balancer_strategy,
+        vllm_hostnames=vllm_hostnames,
         health_check_interval=args.health_check_interval,
-        max_retries=args.max_retries
+        request_timeout=120
     )
     
     # Create orchestrator

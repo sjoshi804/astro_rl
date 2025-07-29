@@ -32,9 +32,27 @@ async def startup_event():
     
     logger.info("Starting Multi-Turn RL Service...")
     
-    # Initialize completion load balancer
-    if not await completion_load_balancer.initialize():
-        raise RuntimeError("Failed to initialize completion load balancer - no healthy VLLM servers")
+    # Wait for VLLM servers to come up
+    if completion_load_balancer:
+        max_attempts = 60  # 5 minutes at 5 second intervals
+        attempt = 1
+        
+        while attempt <= max_attempts:
+            try:
+                if await completion_load_balancer.initialize():
+                    logger.info("Completion load balancer initialized successfully")
+                    break
+                else:
+                    logger.info(f"Attempt {attempt}/{max_attempts} - VLLM servers not ready yet, waiting...")
+                    await asyncio.sleep(5)
+                    attempt += 1
+            except Exception as e:
+                logger.info(f"Attempt {attempt}/{max_attempts} - VLLM servers not ready: {e}")
+                await asyncio.sleep(5)
+                attempt += 1
+        
+        if attempt > max_attempts:
+            raise RuntimeError("Failed to initialize completion load balancer - VLLM servers did not come up within 5 minutes")
     
     logger.info("Multi-Turn RL Service startup complete")
 
@@ -93,14 +111,21 @@ async def health_check():
     if not orchestrator or not completion_load_balancer:
         return {"status": "starting"}
     
-    lb_health = completion_load_balancer.get_health_status()
-    orchestrator_stats = orchestrator.get_stats()
-    
-    return {
-        "status": "healthy" if lb_health["status"] == "healthy" else "unhealthy",
-        "completion_load_balancer": lb_health,
-        "orchestrator": orchestrator_stats
-    }
+    try:
+        lb_health = completion_load_balancer.get_health_status()
+        orchestrator_stats = orchestrator.get_stats()
+        
+        # Service is healthy if load balancer has at least one healthy server
+        lb_healthy = lb_health.get("healthy_servers", 0) > 0
+        
+        return {
+            "status": "healthy" if lb_healthy else "starting",
+            "completion_load_balancer": lb_health,
+            "orchestrator": orchestrator_stats
+        }
+    except Exception as e:
+        logger.warning(f"Health check error: {e}")
+        return {"status": "starting", "error": str(e)}
 
 
 @app.get("/stats")
@@ -146,6 +171,33 @@ async def update_model_params(request: dict):
         "results": results,
         "success": success_count == total_count,
         "model_path": model_path
+    }
+
+
+@app.get("/config")
+async def get_config():
+    """Get service configuration"""
+    if not orchestrator or not completion_load_balancer:
+        raise HTTPException(status_code=503, detail="Services not initialized")
+    
+    return {
+        "service": "Multi-Turn RL Orchestrator",
+        "orchestrator": {
+            "max_turns": orchestrator.max_turns,
+            "timeout_seconds": orchestrator.timeout_seconds,
+            "trajectory_output_dir": str(orchestrator.trajectory_output_dir) if orchestrator.trajectory_output_dir else None,
+            "prompts_jsonl_path": str(orchestrator.prompts_jsonl_path) if orchestrator.prompts_jsonl_path else None,
+            "ray_timeout_per_step": orchestrator.ray_timeout_per_step,
+            "ray_num_cpus": orchestrator.ray_num_cpus,
+            "ray_num_gpus": orchestrator.ray_num_gpus,
+            "success_criteria_available": orchestrator.success_criteria_available
+        },
+        "completion_load_balancer": {
+            "vllm_hostnames": [server.hostname for server in completion_load_balancer.servers],
+            "health_check_interval": completion_load_balancer.health_check_interval,
+            "request_timeout": completion_load_balancer.request_timeout,
+            "total_servers": len(completion_load_balancer.servers)
+        }
     }
 
 
@@ -212,6 +264,16 @@ async def create_services(args):
     )
     
     logger.info("Services created successfully")
+
+
+def create_app(orchestrator_instance: Orchestrator, completion_load_balancer_instance: CompletionLoadBalancer) -> FastAPI:
+    """Create FastAPI app with provided service instances"""
+    global orchestrator, completion_load_balancer
+    
+    orchestrator = orchestrator_instance
+    completion_load_balancer = completion_load_balancer_instance
+    
+    return app
 
 
 def main():

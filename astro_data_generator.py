@@ -18,10 +18,18 @@ logger = logging.getLogger(__name__)
 
 # Import demo tasks from organized demo_data
 try:
-    from demo_data.simple_multistep_tasks import ALL_DEMO_TASKS, get_tasks_by_category, get_simple_tasks
-    from demo_data.demo_config import get_demo_config, list_available_configs
+    from multi_turn_rl.demo_data.task_loader import TaskLoader
+    from multi_turn_rl.demo_data.demo_config import get_demo_config, list_available_configs
+    
+    # Initialize task loader
+    task_loader = TaskLoader()
+    ALL_DEMO_TASKS = task_loader.get_all_tasks()
+    get_tasks_by_category = task_loader.get_tasks_by_category
+    get_simple_tasks = lambda: task_loader.get_quick_tasks()
+    
     DEMO_TASKS_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    logger.warning(f"Demo tasks import failed: {e}")
     # Fallback to original astronomy tasks if demo_data not available
     ASTRONOMY_TASKS = [
         "Load the FITS file and display basic information about the image (dimensions, data type, header keys)",

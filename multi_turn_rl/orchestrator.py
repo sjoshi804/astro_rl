@@ -89,10 +89,46 @@ class Orchestrator:
             
             # Append to JSONL file
             with open(self.prompts_jsonl_path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(log_entry, ensure_ascii=False) + '\\n')
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
                 
         except Exception as e:
             logger.error(f"Failed to log prompt to JSONL: {e}")
+    
+    def format_trajectory_for_chat(self, original_goal: str, trajectory_turns: List[Turn]) -> str:
+        """
+        Format the trajectory history for chat completion requests.
+        
+        Structure:
+        <goal>original task prompt</goal>
+        <turn>model's code</turn>
+        <output>stdout content</output>
+        <error>stderr content</error>  (only if stderr exists)
+        ... (repeat for all turns)
+        
+        Then add instruction to generate next code based on output/errors.
+        """
+        formatted_content = f"<goal>\n{original_goal}\n</goal>\n\n"
+        
+        for turn in trajectory_turns:
+            # Add the turn with code
+            formatted_content += f"<turn>\n{turn.code}\n</turn>\n"
+            
+            # Add execution output if present
+            if turn.execution_output and turn.execution_output.strip():
+                formatted_content += f"{turn.execution_output}\n"
+            
+            formatted_content += "\n"
+        
+        # Add instruction for next turn
+        formatted_content += (
+            "Based on the goal and the output/errors from previous turns, "
+            "generate the next turn of code to achieve the goal. "
+            "Use the output and errors from the previous step to fix any issues "
+            "and continue progressing toward the goal.\n\n"
+            f"{FORMAT_INSTRUCTIONS}"
+        )
+        
+        return formatted_content
     
     def extract_python_code(self, text: str) -> str:
         """Extract Python code from a text response that may contain multiple code blocks and explanations."""
@@ -100,29 +136,29 @@ class Orchestrator:
         logger.info(f"Text length: {len(text)}")
         
         # Find all code blocks between ```python ... ```
-        code_block_pattern = r'```(?:python)?\\s*\\n?(.*?)\\n?```'
+        code_block_pattern = r'```(?:python)?\s*\n?(.*?)\n?```'
         matches = re.findall(code_block_pattern, text, re.DOTALL)
         
         valid_blocks = []
         for code in matches:
             code = code.strip()
             # Remove any leading comments that are instructions
-            lines = code.split('\\n')
+            lines = code.split('\n')
             clean_lines = []
             for line in lines:
                 if line.strip().startswith('python'):
                     continue
                 clean_lines.append(line)
-            code = '\\n'.join(clean_lines).strip()
+            code = '\n'.join(clean_lines).strip()
             if self.is_valid_python_code(code):
                 valid_blocks.append(code)
         
         if valid_blocks:
             # Concatenate all valid code blocks with newlines
-            return '\\n\\n'.join(valid_blocks)
+            return '\n\n'.join(valid_blocks)
         else:
             logger.warning(f"Could not extract valid Python code from VLLM output: {text}...")
-            return "# Unable to extract valid Python code from response\\npass"
+            return "# Unable to extract valid Python code from response\npass"
     
     def is_valid_python_code(self, code: str) -> bool:
         """Check if the given string is valid Python code"""
@@ -171,6 +207,7 @@ class Orchestrator:
                         "code": turn.code,
                         "execution_output": turn.execution_output,
                         "execution_success": turn.execution_success,
+                        "success_criteria_met": getattr(turn, 'success_criterion_met', False),
                         "timestamp": turn.timestamp.isoformat()
                     }
                     for turn in trajectory.turns
@@ -197,8 +234,9 @@ class Orchestrator:
         
         # Check if the success criterion function returned True
         # This is determined by the Ray execution engine after running the criterion function
-        if hasattr(last_turn, 'success_criterion_met'):
-            return last_turn.success_criterion_met
+        # Only use this if a success criterion function was actually provided to the execution engine
+        if hasattr(last_turn, 'success_criterion_met') and last_turn.success_criterion_met:
+            return True
         
         # Fallback to checking execution output for success criterion result
         last_output = last_turn.execution_output.lower()
@@ -217,9 +255,23 @@ class Orchestrator:
             ]
             
             criteria_lower = criteria.lower()
+            
+            # Debug logging
+            logger.debug(f"Checking completion criteria: '{criteria_lower}' in '{last_output[:200]}...'")
+            
+            # First try exact match for the criteria string
+            if criteria_lower in last_output:
+                logger.info(f"Completion criteria met: '{criteria_lower}' found in output")
+                return True
+                
+            # Then try keyword matching
             for keyword in criteria_keywords:
                 if keyword in criteria_lower and keyword in last_output:
+                    logger.info(f"Completion criteria met via keyword: '{keyword}'")
                     return True
+            
+            logger.debug(f"Completion criteria not met. Looking for: '{criteria_lower}'")
+            logger.debug(f"Output: '{last_output}')")
         
         return False
     
@@ -308,20 +360,22 @@ class Orchestrator:
         try:
             for step in range(1, max_turns + 1):
                 try:
-                    # Build chat messages with XML tags for each turn
+                    # Build chat messages using the clean formatting function
                     messages = []
-                    # Optionally add a system prompt
+                    # Add system prompt
                     messages.append({"role": "system", "content": "You are a helpful AI code assistant. Respond with Python code in markdown code blocks."})
                     
                     # Get turns for this specific instance
                     instance_turns = self.trajectory_turns.get(instance_id, [])
-                    for turn in instance_turns:
-                        turn_content = f"<turn>\\n<prompt>{saxutils.escape(turn.prompt)}</prompt>\\n<code>{saxutils.escape(turn.code)}</code>\\n<output>{saxutils.escape(turn.execution_output)}</output>\\n<success>{turn.execution_success}</success>\\n</turn>"
-                        messages.append({"role": "user", "content": turn_content})
                     
-                    # Add the current instruction as the next user message
-                    current_content = f"<turn>\\n<prompt>{saxutils.escape(current_instruction)}</prompt>\\n</turn>\\n{FORMAT_INSTRUCTIONS}"
-                    messages.append({"role": "user", "content": current_content})
+                    # For the first turn, use the initial prompt as the goal
+                    if step == 1:
+                        formatted_content = self.format_trajectory_for_chat(initial_prompt, instance_turns)
+                    else:
+                        # For subsequent turns, continue with the same goal and updated trajectory
+                        formatted_content = self.format_trajectory_for_chat(initial_prompt, instance_turns)
+                    
+                    messages.append({"role": "user", "content": formatted_content})
                     
                     # Prepare the request data for vLLM
                     request_data = {
@@ -389,7 +443,7 @@ class Orchestrator:
                         timestamp=datetime.now()
                     )
                     
-                    # Add success criterion result to turn object
+                    # Add success criterion result to turn object for completion checking
                     turn.success_criterion_met = execution_result.get("success_criterion_met", False)
                     
                     # Store turn in instance-specific list
@@ -429,15 +483,15 @@ class Orchestrator:
                     logger.warning(f"Failed to cleanup Ray execution instance {instance_id}")
             except Exception as e:
                 logger.warning(f"Failed to cleanup Ray execution instance {instance_id}: {e}")
-            finally:
-                # Clean up trajectory tracking
-                if trajectory_id in self.active_trajectories:
-                    del self.active_trajectories[trajectory_id]
-                if instance_id in self.trajectory_turns:
-                    del self.trajectory_turns[instance_id]
         
-        # Get final turns for this instance
+        # Get final turns for this instance BEFORE cleanup
         final_turns = self.trajectory_turns.get(instance_id, [])
+        
+        # Clean up trajectory tracking
+        if trajectory_id in self.active_trajectories:
+            del self.active_trajectories[trajectory_id]
+        if instance_id in self.trajectory_turns:
+            del self.trajectory_turns[instance_id]
         
         # Determine termination reason based on execution engine state
         termination_reason = "generation_error"

@@ -7,6 +7,7 @@ import uuid
 import time
 import sys
 import traceback
+import random
 from typing import *
 from io import StringIO
 
@@ -36,7 +37,7 @@ class RayCodeExecutor:
         self.locals = {}
         self.current_turn = 0
 
-    def execute(self, code: str, success_criterion: Optional[str] = None) -> Dict[str, Any]:
+    def execute(self, code: str, success_criterion: Optional[Any] = None) -> Dict[str, Any]:
         """Execute code and return structured response with state and output."""
         start_time = time.time()
         stdout_buffer = StringIO()
@@ -63,29 +64,44 @@ class RayCodeExecutor:
         stdout_content = stdout_buffer.getvalue()
         stderr_content = stderr_buffer.getvalue()
 
+        # Format output with XML tags
         execution_output = ""
-        if stdout_content:
-            execution_output += stdout_content
-        if stderr_content:
+        if stdout_content.strip():
+            execution_output += f"<output>\n{stdout_content.strip()}\n</output>"
+        if stderr_content.strip():
             if execution_output:
-                execution_output += "\n" + stderr_content
-            else:
-                execution_output = stderr_content
+                execution_output += "\n"
+            execution_output += f"<error>\n{stderr_content.strip()}\n</error>"
 
-        # Check success criterion if provided
-        success = False
+        # Evaluate success criterion separately from code execution
+        success_criterion_met = False
         success_message = ""
+        
         if success_criterion:
             try:
-                success_result = eval(success_criterion, globals(), self.locals)
-                success = bool(success_result)
-                success_message = f"Success criterion '{success_criterion}' evaluated to: {success_result}"
+                if callable(success_criterion):
+                    # Call success criterion function with the current namespace
+                    success_criterion_met = bool(success_criterion(self.locals))
+                    success_message = f"Success criterion met: {success_criterion_met}"
+                elif isinstance(success_criterion, str):
+                    # Evaluate string success criterion
+                    success_result = eval(success_criterion, globals(), self.locals)
+                    success_criterion_met = bool(success_result)
+                    success_message = f"Success criterion met: {success_criterion_met}"
+                else:
+                    success_criterion_met = False
+                    success_message = f"Invalid success criterion type: {type(success_criterion)}"
             except Exception as e:
-                success = False
-                success_message = f"Success criterion failed: {str(e)}"
+                success_criterion_met = False
+                success_message = f"Success criterion error: {str(e)}"
+        else:
+            # Default random success criterion (0.8 probability of False, 0.2 probability of True)
+            success_criterion_met = random.random() < 0.2
+            success_message = f"Success criterion met: {success_criterion_met} (random default)"
 
+        # Determine execution state based on errors, not success criteria
         has_error = "Error:" in stderr_content or "Traceback" in stderr_content
-        state = "crashed" if has_error else ("success" if success or not success_criterion else "running")
+        state = "crashed" if has_error else "success"
 
         self.current_turn += 1
         execution_time = time.time() - start_time
@@ -95,7 +111,7 @@ class RayCodeExecutor:
             "execution_output": execution_output.strip(),
             "execution_time": execution_time,
             "turn": self.current_turn,
-            "success": success,
+            "success_criterion_met": success_criterion_met,
             "success_message": success_message,
             "actor_id": self.id,
             "variables": list(self.locals.keys())
@@ -163,7 +179,7 @@ class RayExecutionEngine:
         
         return actor_id
 
-    def execute_code(self, actor_id: str, code: str, success_criterion: Optional[str] = None) -> Dict[str, Any]:
+    def execute_code(self, actor_id: str, code: str, success_criterion: Optional[Any] = None) -> Dict[str, Any]:
         """Execute code in a specific RayCodeExecutor instance."""
         print(f"🔍 RAY_ENGINE exec() called with actor_id={actor_id}", file=sys.stderr)
         

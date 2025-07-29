@@ -10,7 +10,9 @@ import logging
 from typing import Optional, Dict, Any, List, Union
 from contextlib import asynccontextmanager
 import time
-from vllm import LLM, SamplingParams
+from vllm import SamplingParams
+from vllm import AsyncLLMEngine
+from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.outputs import RequestOutput
 import torch
 
@@ -63,7 +65,8 @@ class VLLMWrapper:
     def __init__(self, model_path: str, tensor_parallel_size: int = 1):
         self.model_path = model_path
         self.tensor_parallel_size = tensor_parallel_size
-        self.llm: Optional[LLM] = None
+        self.engine: Optional[AsyncLLMEngine] = None
+        self._request_id_counter = 0
         self._lock = asyncio.Lock()
         self.app = None
         self._setup_app()
@@ -98,33 +101,39 @@ class VLLMWrapper:
         self.app.get("/status")(self.status)
     
     async def initialize(self) -> bool:
-        """Initialize the VLLM LLM instance"""
+        """Initialize the AsyncLLMEngine instance"""
         try:
-            logger.info(f"Initializing VLLM with model: {self.model_path}")
+            logger.info(f"Initializing AsyncLLMEngine with model: {self.model_path}")
             
-            # Initialize LLM with the specified configuration
-            self.llm = LLM(
+            # Create engine arguments
+            engine_args = AsyncEngineArgs(
                 model=self.model_path,
                 tensor_parallel_size=self.tensor_parallel_size,
                 trust_remote_code=True,
                 dtype="auto",
-                gpu_memory_utilization=0.95,
+                gpu_memory_utilization=0.85,
+                max_num_seqs=32,  # Allow concurrent sequences
+                max_model_len=4096,  # Set reasonable model length
+                enforce_eager=True,  # Use eager execution
             )
             
-            logger.info("VLLM LLM initialized successfully")
+            # Initialize AsyncLLMEngine
+            self.engine = AsyncLLMEngine.from_engine_args(engine_args)
+            
+            logger.info("AsyncLLMEngine initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize VLLM: {e}")
+            logger.error(f"Failed to initialize AsyncLLMEngine: {e}")
             return False
     
     async def shutdown(self):
-        """Shutdown the VLLM instance"""
-        if self.llm:
-            logger.info("Shutting down VLLM")
-            # Clean up GPU memory
-            del self.llm
-            self.llm = None
+        """Shutdown the AsyncLLMEngine instance"""
+        if self.engine:
+            logger.info("Shutting down AsyncLLMEngine")
+            # Clean up engine and GPU memory
+            del self.engine
+            self.engine = None
             torch.cuda.empty_cache()
     
     async def update_model(self, model_path: str) -> bool:
@@ -141,19 +150,43 @@ class VLLMWrapper:
             # Initialize with new model
             return await self.initialize()
     
+    def _get_next_request_id(self) -> str:
+        """Generate unique request ID"""
+        self._request_id_counter += 1
+        return f"req_{self._request_id_counter}"
+    
     async def generate(self, prompt: Union[str, List[str]], sampling_params: SamplingParams) -> List[RequestOutput]:
-        """Generate completions for the given prompt(s)"""
-        if not self.llm:
-            raise RuntimeError("VLLM not initialized")
+        """Generate completions for the given prompt(s) using AsyncLLMEngine"""
+        if not self.engine:
+            raise RuntimeError("AsyncLLMEngine not initialized")
         
-        # Run generation in executor to avoid blocking
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            self.llm.generate,
-            prompt,
-            sampling_params
-        )
+        try:
+            # Handle single prompt or list of prompts
+            if isinstance(prompt, str):
+                prompts = [prompt]
+            else:
+                prompts = prompt
+            
+            # Generate completions for each prompt using the correct AsyncLLMEngine API
+            results = []
+            for single_prompt in prompts:
+                request_id = self._get_next_request_id()
+                
+                # Use the correct AsyncLLMEngine.generate() method
+                final_output = None
+                async for request_output in self.engine.generate(
+                    single_prompt, sampling_params, request_id
+                ):
+                    final_output = request_output
+                
+                if final_output:
+                    results.append(final_output)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"AsyncLLMEngine generation error: {e}")
+            raise RuntimeError(f"Generation failed: {str(e)}")
     
     def format_chat_prompt(self, messages: List[ChatMessage]) -> str:
         """Format chat messages into a prompt string"""
@@ -174,8 +207,8 @@ class VLLMWrapper:
     
     async def generate_endpoint(self, request: GenerateRequest):
         """Generate completions for the given prompt(s)"""
-        if not self.llm:
-            raise HTTPException(status_code=500, detail="VLLM not initialized")
+        if not self.engine:
+            raise HTTPException(status_code=500, detail="AsyncLLMEngine not initialized")
         
         # Validate request prompt
         if not request.prompt or (isinstance(request.prompt, str) and not request.prompt.strip()):
@@ -258,8 +291,8 @@ class VLLMWrapper:
 
     async def chat_completions_endpoint(self, request: ChatCompletionRequest):
         """OpenAI-compatible chat completions endpoint"""
-        if not self.llm:
-            raise HTTPException(status_code=500, detail="VLLM not initialized")
+        if not self.engine:
+            raise HTTPException(status_code=500, detail="AsyncLLMEngine not initialized")
         
         # Convert chat messages to prompt
         prompt = self.format_chat_prompt(request.messages)
@@ -327,8 +360,8 @@ class VLLMWrapper:
 
     async def update_model_params_endpoint(self, request: UpdateModelRequest):
         """Update the model parameters by loading a new model"""
-        if not self.llm:
-            raise HTTPException(status_code=500, detail="VLLM not initialized")
+        if not self.engine:
+            raise HTTPException(status_code=500, detail="AsyncLLMEngine not initialized")
         
         logger.info(f"Updating model to: {request.model_path}")
         
@@ -348,19 +381,19 @@ class VLLMWrapper:
 
     async def health_check(self):
         """Health check endpoint (returns 200 only if healthy)"""
-        if self.llm:
+        if self.engine:
             return {
                 "status": "healthy",
                 "model": self.model_path,
                 "tensor_parallel_size": self.tensor_parallel_size
             }
         else:
-            raise HTTPException(status_code=503, detail="VLLM not initialized or not healthy")
+            raise HTTPException(status_code=503, detail="AsyncLLMEngine not initialized or not healthy")
 
     async def list_models(self):
         """List available models (OpenAI-compatible)"""
-        if not self.llm:
-            raise HTTPException(status_code=503, detail="VLLM not initialized")
+        if not self.engine:
+            raise HTTPException(status_code=503, detail="AsyncLLMEngine not initialized")
         
         return {
             "data": [
@@ -376,10 +409,10 @@ class VLLMWrapper:
     async def status(self):
         """Get detailed status information"""
         return {
-            "status": "running" if self.llm else "not_initialized",
+            "status": "running" if self.engine else "not_initialized",
             "model_path": self.model_path,
             "tensor_parallel_size": self.tensor_parallel_size,
-            "llm_initialized": self.llm is not None,
+            "engine_initialized": self.engine is not None,
             "cuda_available": torch.cuda.is_available(),
             "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
         }
