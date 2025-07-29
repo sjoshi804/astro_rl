@@ -136,12 +136,9 @@ class Orchestrator:
             # Add the turn with code
             formatted_content += f"<turn>\n{turn.code}\n</turn>\n"
             
-            # Add execution output or error based on success status
+            # Add execution output (already formatted with tags by execution engine)
             if turn.execution_output and turn.execution_output.strip():
-                if turn.execution_success:
-                    formatted_content += f"<output>\n{turn.execution_output}\n</output>\n"
-                else:
-                    formatted_content += f"<error>\n{turn.execution_output}\n</error>\n"
+                formatted_content += f"{turn.execution_output}\n"
             
             formatted_content += "\n"
         
@@ -460,12 +457,21 @@ class Orchestrator:
                     execution_result = self.execution_engine.execute_code(instance_id, selected_code, success_criterion_func)
                     logger.info(f"✅ ORCHESTRATOR <- Ray executor returned: state={execution_result.get('state', 'unknown')}, success={execution_result.get('success', False)}")
                     
+                    # Format execution output with XML tags
+                    formatted_output = ""
+                    if execution_result.get("execution_output", "").strip():
+                        formatted_output += f"<output>\n{execution_result['execution_output'].strip()}\n</output>"
+                    if execution_result.get("execution_error", "").strip():
+                        if formatted_output:
+                            formatted_output += "\n"
+                        formatted_output += f"<error>\n{execution_result['execution_error'].strip()}\n</error>"
+                    
                     # Create turn record
                     turn = Turn(
                         step=step,
                         prompt=current_instruction,
                         code=selected_code,
-                        execution_output=execution_result["execution_output"],
+                        execution_output=formatted_output,
                         execution_success=execution_result.get("state") == "success",
                         timestamp=datetime.now()
                     )

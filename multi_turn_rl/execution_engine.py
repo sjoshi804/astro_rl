@@ -64,14 +64,9 @@ class RayCodeExecutor:
         stdout_content = stdout_buffer.getvalue()
         stderr_content = stderr_buffer.getvalue()
 
-        # Format output with XML tags
-        execution_output = ""
-        if stdout_content.strip():
-            execution_output += f"<output>\n{stdout_content.strip()}\n</output>"
-        if stderr_content.strip():
-            if execution_output:
-                execution_output += "\n"
-            execution_output += f"<error>\n{stderr_content.strip()}\n</error>"
+        # Return raw stdout and stderr strings (no XML formatting here)
+        execution_output = stdout_content.strip()
+        execution_error = stderr_content.strip()
 
         # Evaluate success criterion separately from code execution
         success_criterion_met = False
@@ -109,6 +104,7 @@ class RayCodeExecutor:
         result = {
             "state": state,
             "execution_output": execution_output.strip(),
+            "execution_error": execution_error.strip(),
             "execution_time": execution_time,
             "turn": self.current_turn,
             "success_criterion_met": success_criterion_met,

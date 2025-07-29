@@ -46,13 +46,10 @@ def format_trajectory_chat(trajectory: Dict[str, Any]) -> str:
         code = turn.get("code", "")
         formatted += f"<turn>\n{code}\n</turn>\n"
         
-        # Add execution output or error based on success status
+        # Add execution output (already formatted with XML tags by orchestrator)
         execution_output = turn.get("execution_output", "")
         if execution_output and execution_output.strip():
-            if turn.get("execution_success", True):
-                formatted += f"<output>\n{execution_output}\n</output>\n"
-            else:
-                formatted += f"<error>\n{execution_output}\n</error>\n"
+            formatted += f"{execution_output}\n"
         
         formatted += "\n"
     
